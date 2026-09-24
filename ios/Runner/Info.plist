@@ -2,27 +2,12 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>CFBundleDisplayName</key>
-	<string>kRemote</string>
-	<key>NSLocalNetworkUsageDescription</key>
-	<string>O kRemote precisa acessar a rede local para encontrar e controlar sua TV, Chromecast e outros aparelhos.</string>
-	<key>NSBonjourServices</key>
-	<array>
-		<string>_androidtvremote2._tcp</string>
-		<string>_googlecast._tcp</string>
-		<string>_viziocast._tcp</string>
-	</array>
-	<key>NSAppTransportSecurity</key>
-	<dict>
-		<key>NSAllowsLocalNetworking</key>
-		<true/>
-	</dict>
-	<key>ITSAppUsesNonExemptEncryption</key>
-	<false/>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<key>CFBundleDisplayName</key>
+	<string>kRemote</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -39,8 +24,23 @@
 	<string>????</string>
 	<key>CFBundleVersion</key>
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_androidtvremote2._tcp</string>
+		<string>_googlecast._tcp</string>
+		<string>_viziocast._tcp</string>
+	</array>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>O kRemote precisa acessar a rede local para encontrar e controlar sua TV, Chromecast e outros aparelhos.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
