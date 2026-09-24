@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -27,6 +29,15 @@ Future<void> main() async {
     credentials: secure,
     pins: secure.pins,
     factory: factory,
+    probe: (host, port) async {
+      try {
+        final s = await Socket.connect(host, port, timeout: const Duration(seconds: 2));
+        s.destroy();
+        return true;
+      } on SocketException {
+        return false;
+      }
+    },
   );
   final settings = SettingsService();
   await Future.wait([devices.load(), settings.load()]);

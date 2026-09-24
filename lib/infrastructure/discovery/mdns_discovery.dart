@@ -2,11 +2,12 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:flutter/foundation.dart';
+import 'package:flutter/foundation.dart' show Uint8List;
 import 'package:nsd/nsd.dart' as nsd;
 
 import '../../domain/entities/remote_device.dart';
 import '../../domain/ports/device_discovery.dart';
+import '../net/log.dart';
 
 /// Descoberta via Bonjour/NSD nativo (não exige entitlement de multicast no iOS).
 class MdnsDiscovery implements DeviceDiscovery {
@@ -29,13 +30,19 @@ class MdnsDiscovery implements DeviceDiscovery {
         try {
           final d = await nsd.startDiscovery(entry.key, ipLookupType: nsd.IpLookupType.v4);
           discoveries.add(d);
+          KLog.d('mdns', 'buscando ${entry.key}');
           d.addServiceListener((service, status) {
             if (status != nsd.ServiceStatus.found) return;
+            KLog.d(
+              'mdns',
+              '${entry.key}: "${service.name}" host=${service.host} ip=${service.addresses?.map((a) => a.address).join(',')} porta=${service.port}',
+            );
             final dev = _toDevice(service, entry.value);
+            if (dev == null) KLog.d('mdns', '${entry.key}: "${service.name}" ignorado (sem endereço)');
             if (dev != null && seen.add(dev.key) && !ctrl.isClosed) ctrl.add(dev);
           });
         } catch (e) {
-          if (kDebugMode) debugPrint('[mdns] falha em ${entry.key}: $e');
+          KLog.d('mdns', 'falha em ${entry.key}: $e');
         }
       }
       await Future<void>.delayed(timeout);

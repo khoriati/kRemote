@@ -165,6 +165,8 @@ class DiscoveredDevice {
     model: model,
     macAddress: macAddress,
     pairingPort: protocol == RemoteProtocol.androidTv ? 6467 : null,
-    volumeViaCast: protocol == RemoteProtocol.androidTv,
+    // Chromecast com Google TV manda volume à TV por CEC a partir da tecla;
+    // TVs com Google TV embutida costumam recusar a tecla e aceitar o Cast.
+    volumeViaCast: protocol == RemoteProtocol.androidTv && !(model ?? '').toLowerCase().startsWith('chromecast'),
   );
 }

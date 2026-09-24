@@ -78,15 +78,16 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
 
   Future<void> _add(RemoteDevice d) async {
     final svc = AppScope.of(context).devices;
+    final RemoteDevice added;
     try {
-      await svc.add(d);
+      added = await svc.add(d);
     } on RemoteException catch (e) {
       _snack(e.message);
       return;
     }
     if (!mounted) return;
-    if (d.protocol.requiresPairing && !svc.isPaired(d)) {
-      await PairingSheet.show(context, d);
+    if (added.protocol.requiresPairing && !svc.isPaired(added)) {
+      await PairingSheet.show(context, added);
       if (!mounted) return;
     }
     Navigator.of(context).pop();
@@ -99,6 +100,10 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
     final cs = Theme.of(context).colorScheme;
     final existing = AppScope.of(context).devices.devices.map((d) => d.id).toSet();
     final atvHosts = _found.values.where((d) => d.protocol == RemoteProtocol.androidTv).map((d) => d.host).toSet();
+    final castModelByHost = {
+      for (final d in _found.values)
+        if (d.protocol == RemoteProtocol.cast && d.model != null) d.host: d.model!,
+    };
     final found =
         _found.values
             // Chromecast com Google TV anuncia os dois serviços; o Android TV é o completo.
@@ -147,8 +152,12 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
                 ),
                 title: Text(d.name),
                 subtitle: Text('${d.protocol.label} · ${d.host}${d.model != null ? ' · ${d.model}' : ''}'),
-                trailing: existing.contains(d.toDevice().id) ? const Icon(Icons.check) : const Icon(Icons.add),
-                onTap: existing.contains(d.toDevice().id) ? null : () => _add(d.toDevice()),
+                trailing: existing.contains(_withModel(d, castModelByHost).toDevice().id)
+                    ? const Icon(Icons.check)
+                    : const Icon(Icons.add),
+                onTap: existing.contains(_withModel(d, castModelByHost).toDevice().id)
+                    ? null
+                    : () => _add(_withModel(d, castModelByHost).toDevice()),
               ),
             ),
           const SizedBox(height: 16),
@@ -204,6 +213,21 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
       ),
     );
   }
+}
+
+/// Android TV não anuncia modelo via mDNS; herda o `md` do serviço Cast do mesmo host.
+DiscoveredDevice _withModel(DiscoveredDevice d, Map<String, String> castModelByHost) {
+  if (d.protocol != RemoteProtocol.androidTv || d.model != null) return d;
+  final m = castModelByHost[d.host];
+  if (m == null) return d;
+  return DiscoveredDevice(
+    name: d.name,
+    host: d.host,
+    port: d.port,
+    protocol: d.protocol,
+    model: m,
+    serviceName: d.serviceName,
+  );
 }
 
 class _SectionHeader extends StatelessWidget {

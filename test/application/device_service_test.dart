@@ -108,6 +108,67 @@ void main() {
       expect(again.certificatePem, a.certificatePem);
     }, timeout: const Timeout(Duration(minutes: 2)));
 
+    test('protocolo sem emparelhamento é sempre "emparelhado", mesmo após resetTrust', () async {
+      final cast = device(id: 'c', protocol: RemoteProtocol.cast, port: 8009);
+      await svc.add(cast);
+      expect(svc.isPaired(cast), isTrue);
+      await svc.resetTrust('c');
+      expect(svc.isPaired(cast), isTrue);
+    });
+
+    test('Cast cujo host atende em 6466 é promovido a Google TV', () async {
+      final promoted = DeviceService(
+        repository: repo,
+        credentials: creds,
+        pins: pins,
+        factory: ControllerFactory(credentials: creds, pins: pins),
+        probe: (host, port) async => port == 6466,
+      );
+      final added = await promoted.add(
+        const RemoteDevice(
+          id: 'cast-x',
+          name: 'Projetor',
+          host: '192.168.1.43',
+          port: 8009,
+          protocol: RemoteProtocol.cast,
+          model: 'Chromecast',
+        ),
+      );
+      expect(added.protocol, RemoteProtocol.androidTv);
+      expect(added.port, 6466);
+      expect(added.pairingPort, 6467);
+      expect(added.name, 'Projetor');
+      expect(added.volumeViaCast, isFalse, reason: 'Chromecast usa tecla de volume');
+      expect(promoted.isPaired(added), isFalse);
+      expect(promoted.devices.single.id, added.id);
+
+      final notPromoted = DeviceService(
+        repository: MemoryDeviceRepository(),
+        credentials: creds,
+        pins: pins,
+        factory: ControllerFactory(credentials: creds, pins: pins),
+        probe: (host, port) async => false,
+      );
+      final kept = await notPromoted.add(device(id: 'c2', protocol: RemoteProtocol.cast, port: 8009));
+      expect(kept.protocol, RemoteProtocol.cast);
+    });
+
+    test('load migra Cast já cadastrado para Google TV quando 6466 responde', () async {
+      repo.saved = [device(id: 'cast-old', name: 'Projetor', protocol: RemoteProtocol.cast, port: 8009)];
+      final s = DeviceService(
+        repository: repo,
+        credentials: creds,
+        pins: pins,
+        factory: ControllerFactory(credentials: creds, pins: pins),
+        probe: (host, port) async => true,
+      );
+      await s.load();
+      await Future<void>.delayed(Duration.zero);
+      expect(s.devices.single.protocol, RemoteProtocol.androidTv);
+      expect(s.active?.protocol, RemoteProtocol.androidTv);
+      expect(repo.saved.single.protocol, RemoteProtocol.androidTv);
+    });
+
     test('fábrica escolhe o adapter pelo protocolo', () async {
       final r = device(id: 'r', protocol: RemoteProtocol.roku, port: 8060);
       await svc.add(r);

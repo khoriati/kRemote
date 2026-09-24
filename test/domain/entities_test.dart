@@ -42,7 +42,15 @@ void main() {
       final d = found.toDevice();
       expect(d.id, 'androidTv-192-168-1-96-6466');
       expect(d.pairingPort, 6467);
-      expect(d.volumeViaCast, isTrue, reason: 'Google TV usa Cast para volume por padrão');
+      expect(d.volumeViaCast, isTrue, reason: 'TV com Google TV usa Cast para volume por padrão');
+      const cc = DiscoveredDevice(
+        name: 'Projetor',
+        host: '1.1.1.1',
+        port: 6466,
+        protocol: RemoteProtocol.androidTv,
+        model: 'Chromecast',
+      );
+      expect(cc.toDevice().volumeViaCast, isFalse, reason: 'Chromecast controla a TV por CEC a partir da tecla');
       expect(found.key, 'androidTv@192.168.1.96:6466');
     });
   });
