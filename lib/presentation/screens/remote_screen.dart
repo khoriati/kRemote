@@ -42,8 +42,10 @@ class _RemoteScreenState extends State<RemoteScreen> {
     final svc = AppScope.of(context).devices;
     final d = svc.active;
     if (d == null || d.id == _boundId) return;
-    await _sub?.cancel();
+    // Marca antes de qualquer await para evitar bind duplicado no mesmo frame.
     _boundId = d.id;
+    unawaited(_sub?.cancel());
+    _sub = null;
     _controller = null;
     if (!mounted) return;
     setState(() => _state = DeviceConnectionState.disconnected);
@@ -55,7 +57,20 @@ class _RemoteScreenState extends State<RemoteScreen> {
     });
     if (svc.isPaired(d)) {
       unawaited(c.connect().catchError((Object e) => _toast(e)));
+    } else {
+      // Aparelho ainda não emparelhado: abre o fluxo imediatamente.
+      unawaited(_pair(d));
     }
+  }
+
+  bool _pairingOpen = false;
+
+  /// Força novo emparelhamento (apaga credenciais e reabre o fluxo).
+  Future<void> _repair(RemoteDevice d) async {
+    await AppScope.of(context).devices.resetTrust(d.id);
+    if (!mounted) return;
+    _boundId = null;
+    await _bind();
   }
 
   void _toast(Object e) {
@@ -84,10 +99,16 @@ class _RemoteScreenState extends State<RemoteScreen> {
   }
 
   Future<void> _pair(RemoteDevice d) async {
-    final ok = await PairingSheet.show(context, d);
-    if (ok == true && mounted) {
-      _boundId = null;
-      await _bind();
+    if (_pairingOpen) return;
+    _pairingOpen = true;
+    try {
+      final ok = await PairingSheet.show(context, d);
+      if (ok == true && mounted) {
+        _boundId = null;
+        await _bind();
+      }
+    } finally {
+      _pairingOpen = false;
     }
   }
 
@@ -132,21 +153,27 @@ class _RemoteScreenState extends State<RemoteScreen> {
                     context,
                   ).push(MaterialPageRoute<void>(builder: (_) => const DevicesScreen())),
                   'add' => _openAdd(),
+                  'pair' => active == null ? null : _repair(active),
                   'settings' => Navigator.of(
                     context,
                   ).push(MaterialPageRoute<void>(builder: (_) => const SettingsScreen())),
                   _ => null,
                 },
-                itemBuilder: (_) => const [
-                  PopupMenuItem(
+                itemBuilder: (_) => [
+                  if (active != null && active.protocol.requiresPairing)
+                    const PopupMenuItem(
+                      value: 'pair',
+                      child: ListTile(leading: Icon(Icons.link), title: Text('Emparelhar novamente')),
+                    ),
+                  const PopupMenuItem(
                     value: 'add',
                     child: ListTile(leading: Icon(Icons.add), title: Text('Adicionar dispositivo')),
                   ),
-                  PopupMenuItem(
+                  const PopupMenuItem(
                     value: 'devices',
                     child: ListTile(leading: Icon(Icons.devices), title: Text('Meus dispositivos')),
                   ),
-                  PopupMenuItem(
+                  const PopupMenuItem(
                     value: 'settings',
                     child: ListTile(leading: Icon(Icons.tune), title: Text('Aparência')),
                   ),

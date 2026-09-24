@@ -274,6 +274,7 @@ class _ManualFormState extends State<_ManualForm> {
         protocol: _protocol,
         macAddress: _wantsMac && _mac.text.trim().isNotEmpty ? _mac.text.trim().toUpperCase() : null,
         pairingPort: _protocol == RemoteProtocol.androidTv ? 6467 : null,
+        volumeViaCast: _protocol == RemoteProtocol.androidTv,
       ),
     );
   }

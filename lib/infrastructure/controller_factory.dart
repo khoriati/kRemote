@@ -26,10 +26,24 @@ class ControllerFactory {
 
   TlsTrust _trust(RemoteDevice d) => TlsTrust(deviceId: d.id, store: pins);
 
+  /// Mesma Google TV vista como receptor Cast (porta 8009), para volume.
+  static RemoteDevice _castTwin(RemoteDevice d) => RemoteDevice(
+    id: '${d.id}-cast',
+    name: d.name,
+    host: d.host,
+    port: RemoteProtocol.cast.defaultPort,
+    protocol: RemoteProtocol.cast,
+  );
+
   Future<RemoteController> create(RemoteDevice d) async {
     final creds = await credentials.read(d.id);
     return switch (d.protocol) {
-      RemoteProtocol.androidTv => AndroidTvController(d, ClientIdentity.fromCredentials(creds), _trust(d)),
+      RemoteProtocol.androidTv => AndroidTvController(
+        d,
+        ClientIdentity.fromCredentials(creds),
+        _trust(d),
+        volumeFallback: d.volumeViaCast ? CastController(_castTwin(d), _trust(_castTwin(d))) : null,
+      ),
       RemoteProtocol.cast => CastController(d, _trust(d)),
       RemoteProtocol.samsungTizen => SamsungController(d, creds?['token'], _trust(d)),
       RemoteProtocol.lgWebOs => LgController(d, creds?['clientKey'], _trust(d)),

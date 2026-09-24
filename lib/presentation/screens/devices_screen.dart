@@ -56,6 +56,13 @@ class DevicesScreen extends StatelessWidget {
                       const PopupMenuItem(value: 'rename', child: Text('Renomear')),
                       if (d.protocol.requiresPairing)
                         const PopupMenuItem(value: 'pair', child: Text('Emparelhar novamente')),
+                      if (d.protocol == RemoteProtocol.androidTv)
+                        PopupMenuItem(
+                          value: 'castvol',
+                          child: Text(
+                            d.volumeViaCast ? 'Volume por tecla (desligar Cast)' : 'Volume via Cast (recomendado)',
+                          ),
+                        ),
                       const PopupMenuItem(value: 'trust', child: Text('Redefinir confiança (certificado)')),
                       const PopupMenuItem(value: 'delete', child: Text('Remover')),
                     ],
@@ -89,6 +96,8 @@ class DevicesScreen extends StatelessWidget {
       case 'pair':
         await svc.resetTrust(d.id);
         if (context.mounted) await PairingSheet.show(context, d);
+      case 'castvol':
+        await svc.update(d.copyWith(volumeViaCast: !d.volumeViaCast));
       case 'trust':
         final ok = await _confirm(
           context,

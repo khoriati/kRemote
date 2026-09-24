@@ -56,6 +56,7 @@ class RemoteDevice {
     this.model,
     this.macAddress,
     this.pairingPort,
+    this.volumeViaCast = false,
   });
 
   final String id;
@@ -71,17 +72,31 @@ class RemoteDevice {
   /// Porta de emparelhamento (Android TV usa 6467).
   final int? pairingPort;
 
-  RemoteDevice copyWith({String? name, String? host, int? port, String? model, String? macAddress, int? pairingPort}) =>
-      RemoteDevice(
-        id: id,
-        name: name ?? this.name,
-        host: host ?? this.host,
-        port: port ?? this.port,
-        protocol: protocol,
-        model: model ?? this.model,
-        macAddress: macAddress ?? this.macAddress,
-        pairingPort: pairingPort ?? this.pairingPort,
-      );
+  /// Google TV: ajustar volume/mudo pelo protocolo Cast (porta 8009) em vez de
+  /// injetar teclas. Várias TVs (ex.: Philips) recusam a tecla de volume com
+  /// "use um controle remoto", mas aceitam o volume via Cast, como faz o
+  /// app Google Home.
+  final bool volumeViaCast;
+
+  RemoteDevice copyWith({
+    String? name,
+    String? host,
+    int? port,
+    String? model,
+    String? macAddress,
+    int? pairingPort,
+    bool? volumeViaCast,
+  }) => RemoteDevice(
+    id: id,
+    name: name ?? this.name,
+    host: host ?? this.host,
+    port: port ?? this.port,
+    protocol: protocol,
+    model: model ?? this.model,
+    macAddress: macAddress ?? this.macAddress,
+    pairingPort: pairingPort ?? this.pairingPort,
+    volumeViaCast: volumeViaCast ?? this.volumeViaCast,
+  );
 
   Map<String, dynamic> toJson() => {
     'id': id,
@@ -92,6 +107,7 @@ class RemoteDevice {
     'model': model,
     'macAddress': macAddress,
     'pairingPort': pairingPort,
+    'volumeViaCast': volumeViaCast,
   };
 
   factory RemoteDevice.fromJson(Map<String, dynamic> json) => RemoteDevice(
@@ -103,6 +119,7 @@ class RemoteDevice {
     model: json['model'] as String?,
     macAddress: json['macAddress'] as String?,
     pairingPort: json['pairingPort'] as int?,
+    volumeViaCast: json['volumeViaCast'] as bool? ?? false,
   );
 
   @override
@@ -148,5 +165,6 @@ class DiscoveredDevice {
     model: model,
     macAddress: macAddress,
     pairingPort: protocol == RemoteProtocol.androidTv ? 6467 : null,
+    volumeViaCast: protocol == RemoteProtocol.androidTv,
   );
 }

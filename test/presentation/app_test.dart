@@ -57,11 +57,22 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Sala'), findsOneWidget);
     expect(find.byType(DPad), findsOneWidget);
-    expect(find.text('Emparelhar'), findsOneWidget, reason: 'sem credenciais → precisa emparelhar');
+    // Sem credenciais o fluxo de emparelhamento abre sozinho; cancelamos para seguir.
+    expect(find.text('Emparelhar com Sala'), findsOneWidget);
+    await tester.tap(find.text('Cancelar'));
+    await tester.pumpAndSettle();
+    expect(find.text('Emparelhar'), findsOneWidget, reason: 'chip de estado indica pendência');
     // Alterna de dispositivo pelo seletor.
     await tester.tap(find.text('Sala'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Quarto').last);
+    await tester.pumpAndSettle();
+    expect(
+      find.text('Emparelhar com Quarto'),
+      findsOneWidget,
+      reason: 'troca para aparelho não emparelhado abre o fluxo',
+    );
+    await tester.tap(find.text('Cancelar'));
     await tester.pumpAndSettle();
     expect(find.text('Quarto'), findsOneWidget);
     // Painéis

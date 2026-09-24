@@ -6,6 +6,7 @@ import '../../../domain/entities/app_shortcut.dart';
 import '../../../domain/entities/connection_state.dart';
 import '../../../domain/entities/remote_key.dart';
 import '../../../domain/errors.dart';
+import '../../../domain/ports/remote_controller.dart';
 import '../../net/protobuf.dart';
 import '../../net/tls_trust.dart';
 import '../base_controller.dart';
@@ -53,11 +54,19 @@ class RemoteMessages {
 
 /// Controlador Google TV / Android TV (Android TV Remote v2, porta 6466).
 class AndroidTvController extends BaseRemoteController {
-  AndroidTvController(super.device, this.identity, this.trust);
+  AndroidTvController(super.device, this.identity, this.trust, {RemoteController? volumeFallback})
+    // ignore: prefer_initializing_formals
+    : _volumeFallback = volumeFallback;
 
   /// Identidade emparelhada; `null` enquanto o aparelho não foi emparelhado.
   final ClientIdentity? identity;
   final TlsTrust trust;
+
+  /// Controlador Cast do mesmo aparelho, usado para volume quando
+  /// [RemoteDevice.volumeViaCast] está ativo.
+  final RemoteController? _volumeFallback;
+
+  static const _volumeKeys = {RemoteKey.volumeUp, RemoteKey.volumeDown, RemoteKey.mute};
 
   SecureSocket? _socket;
   final _buffer = <int>[];
@@ -203,11 +212,25 @@ class AndroidTvController extends BaseRemoteController {
   }
 
   @override
-  Future<void> disconnect() async => _teardown(DeviceConnectionState.disconnected);
+  Future<void> disconnect() async {
+    _teardown(DeviceConnectionState.disconnected);
+    await _volumeFallback?.disconnect();
+  }
 
   @override
   Future<void> sendKey(RemoteKey key, {KeyPress press = KeyPress.short}) async {
     final code = androidTvKeyCodes[key] ?? unsupported(key);
+    final fallback = _volumeFallback;
+    if (device.volumeViaCast && fallback != null && _volumeKeys.contains(key)) {
+      if (press == KeyPress.longEnd) return;
+      try {
+        await fallback.sendKey(key);
+        return;
+      } on RemoteException catch (e) {
+        // Cast indisponível: cai para a injeção de tecla convencional.
+        log('volume via Cast falhou (${e.message}); usando tecla');
+      }
+    }
     await ensureConnected();
     final dir = switch (press) {
       KeyPress.short => RemoteMessages.directionShort,
@@ -240,6 +263,8 @@ class AndroidTvController extends BaseRemoteController {
   @override
   void dispose() {
     _teardown(DeviceConnectionState.disconnected);
+    final f = _volumeFallback;
+    if (f is BaseRemoteController) f.dispose();
     super.dispose();
   }
 }

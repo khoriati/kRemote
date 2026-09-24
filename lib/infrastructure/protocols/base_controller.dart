@@ -23,10 +23,11 @@ abstract class BaseRemoteController extends RemoteController {
   DeviceConnectionState get currentState => _state;
 
   @override
-  Stream<DeviceConnectionState> get connectionState async* {
-    yield _state;
-    yield* _stateCtrl.stream;
-  }
+  Stream<DeviceConnectionState> get connectionState => Stream<DeviceConnectionState>.multi((c) {
+    c.add(_state);
+    final sub = _stateCtrl.stream.listen(c.add, onError: c.addError, onDone: c.close);
+    c.onCancel = sub.cancel;
+  });
 
   @protected
   void setState(DeviceConnectionState s) {

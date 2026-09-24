@@ -101,6 +101,7 @@ class DeviceService extends ChangeNotifier {
     await _disposeController(id);
     await _creds.delete(id);
     await _pins.delete(id);
+    await _pins.delete('$id-cast');
     _paired.remove(id);
     if (_activeId == id) _activeId = _devices.firstOrNull?.id;
     await _repo.saveAll(_devices);
@@ -112,6 +113,7 @@ class DeviceService extends ChangeNotifier {
     await _disposeController(id);
     await _creds.delete(id);
     await _pins.delete(id);
+    await _pins.delete('$id-cast');
     _paired[id] = false;
     notifyListeners();
   }

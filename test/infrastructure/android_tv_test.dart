@@ -6,6 +6,7 @@ import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:kremote/domain/entities/app_shortcut.dart';
 import 'package:kremote/domain/entities/connection_state.dart';
+import 'package:kremote/domain/entities/remote_device.dart';
 import 'package:kremote/domain/entities/remote_key.dart';
 import 'package:kremote/domain/errors.dart';
 import 'package:kremote/domain/ports/pairing_flow.dart';
@@ -15,6 +16,7 @@ import 'package:kremote/infrastructure/protocols/android_tv/android_tv_certifica
 import 'package:kremote/infrastructure/protocols/android_tv/android_tv_controller.dart';
 import 'package:kremote/infrastructure/protocols/android_tv/android_tv_keys.dart';
 import 'package:kremote/infrastructure/protocols/android_tv/android_tv_pairing.dart';
+import 'package:kremote/infrastructure/protocols/base_controller.dart';
 
 import '../support/fake_android_tv.dart';
 import '../support/fakes.dart';
@@ -252,6 +254,39 @@ void main() {
       expect(c.currentState, DeviceConnectionState.needsPairing);
     });
 
+    test('volume é delegado ao Cast quando volumeViaCast está ativo, com fallback para tecla', () async {
+      final server = FakeRemoteServer(tv, trustedClientPem: client.certificatePem);
+      await server.start();
+      addTearDown(server.close);
+      final dev = RemoteDevice(
+        id: 'dev-1',
+        name: 'TV',
+        host: '127.0.0.1',
+        port: server.port,
+        protocol: RemoteProtocol.androidTv,
+        volumeViaCast: true,
+      );
+      final cast = _RecordingController(dev);
+      final c = AndroidTvController(
+        dev,
+        client,
+        TlsTrust(deviceId: dev.id, store: MemoryPinStore()),
+        volumeFallback: cast,
+      );
+      addTearDown(c.dispose);
+      await c.sendKey(RemoteKey.volumeUp);
+      await c.sendKey(RemoteKey.mute);
+      await c.sendKey(RemoteKey.home);
+      expect(cast.keys, [RemoteKey.volumeUp, RemoteKey.mute]);
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      expect(server.keyInjects, [(3, 3)], reason: 'só a tecla home foi injetada');
+
+      cast.fail = true;
+      await c.sendKey(RemoteKey.volumeDown);
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      expect(server.keyInjects.last, (25, 3), reason: 'Cast falhou → injeta tecla');
+    });
+
     test('sem identidade emparelhada vai direto para needsPairing, sem rede', () async {
       final dev = device(port: 1);
       final c = AndroidTvController(dev, null, TlsTrust(deviceId: dev.id, store: MemoryPinStore()));
@@ -284,4 +319,24 @@ class X509CertificateFake implements X509Certificate {
 
   @override
   dynamic noSuchMethod(Invocation i) => super.noSuchMethod(i);
+}
+
+/// Controlador que só registra teclas (simula o Cast).
+class _RecordingController extends BaseRemoteController {
+  _RecordingController(super.device);
+  final keys = <RemoteKey>[];
+  bool fail = false;
+  @override
+  Set<RemoteKey> get supportedKeys => RemoteKey.values.toSet();
+  @override
+  Set<RemoteCapability> get capabilities => const {};
+  @override
+  Future<void> connect() async => setState(DeviceConnectionState.connected);
+  @override
+  Future<void> disconnect() async => setState(DeviceConnectionState.disconnected);
+  @override
+  Future<void> sendKey(RemoteKey key, {KeyPress press = KeyPress.short}) async {
+    if (fail) throw const ConnectionException('cast indisponível');
+    keys.add(key);
+  }
 }

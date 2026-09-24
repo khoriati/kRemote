@@ -13,9 +13,16 @@ void main() {
         model: 'Chromecast',
         macAddress: 'AA:BB:CC:DD:EE:FF',
         pairingPort: 6467,
+        volumeViaCast: true,
       );
       final back = RemoteDevice.fromJson(d.toJson());
       expect(back, d);
+      expect(back.volumeViaCast, isTrue);
+      expect(
+        RemoteDevice.fromJson(d.toJson()..remove('volumeViaCast')).volumeViaCast,
+        isFalse,
+        reason: 'compatível com JSON antigo',
+      );
       expect(back.model, 'Chromecast');
       expect(back.macAddress, 'AA:BB:CC:DD:EE:FF');
       expect(back.pairingPort, 6467);
@@ -35,6 +42,7 @@ void main() {
       final d = found.toDevice();
       expect(d.id, 'androidTv-192-168-1-96-6466');
       expect(d.pairingPort, 6467);
+      expect(d.volumeViaCast, isTrue, reason: 'Google TV usa Cast para volume por padrão');
       expect(found.key, 'androidTv@192.168.1.96:6466');
     });
   });
