@@ -45,6 +45,24 @@ class RemoteMessages {
     return ProtoWriter.frameVarint((ProtoWriter()..message(10, k)).toBytes());
   }
 
+  /// Edição de texto via IME: substitui o conteúdo do campo em foco.
+  /// `RemoteImeBatchEdit{ime_counter, field_counter, edit_info[{insert, text_field_status}]}`.
+  static Uint8List imeBatchEdit({required int imeCounter, required int fieldCounter, required String text}) {
+    final status = ProtoWriter()
+      ..int32(1, fieldCounter)
+      ..string(2, text)
+      ..int32(3, text.length)
+      ..int32(4, text.length);
+    final edit = ProtoWriter()
+      ..int32(1, 1)
+      ..message(2, status);
+    final batch = ProtoWriter()
+      ..int32(1, imeCounter)
+      ..int32(2, fieldCounter)
+      ..message(3, edit);
+    return ProtoWriter.frameVarint((ProtoWriter()..message(21, batch)).toBytes());
+  }
+
   static Uint8List appLink(String link) =>
       ProtoWriter.frameVarint((ProtoWriter()..message(90, ProtoWriter()..string(1, link))).toBytes());
 
@@ -71,6 +89,11 @@ class AndroidTvController extends BaseRemoteController {
 
   SecureSocket? _socket;
   final _buffer = <int>[];
+
+  /// Estado do campo de texto em foco na TV (anunciado pela própria TV).
+  int? _imeCounter;
+  int? _fieldCounter;
+  String _fieldValue = '';
   Completer<void>? _ready;
   Timer? _watchdog;
 
@@ -201,6 +224,26 @@ class AndroidTvController extends BaseRemoteController {
     } else if (msg.containsKey(8)) {
       final val = msg[8]!.asMessage.readAll()[1]?.asInt ?? 0;
       _socket?.add(RemoteMessages.pingResponse(val));
+    } else if (msg.containsKey(20)) {
+      // RemoteImeKeyInject: campo de texto ganhou foco.
+      final inject = msg[20]!.asMessage.readAll();
+      final appInfo = inject[1]?.asMessage.readAll();
+      final status = inject[2]?.asMessage.readAll();
+      _imeCounter = appInfo?[1]?.asInt ?? _imeCounter;
+      _fieldCounter = status?[1]?.asInt ?? _fieldCounter;
+      _fieldValue = status?[2]?.asString ?? '';
+      log('campo de texto em foco (ime=$_imeCounter campo=$_fieldCounter, ${_fieldValue.length} chars)');
+    } else if (msg.containsKey(21)) {
+      final batch = msg[21]!.asMessage.readAll();
+      _imeCounter = batch[1]?.asInt ?? _imeCounter;
+      _fieldCounter = batch[2]?.asInt ?? _fieldCounter;
+      final status = batch[3]?.asMessage.readAll()[2]?.asMessage.readAll();
+      if (status != null) _fieldValue = status[2]?.asString ?? _fieldValue;
+      log('campo de texto atualizado (ime=$_imeCounter campo=$_fieldCounter)');
+    } else if (msg.containsKey(22)) {
+      final status = msg[22]!.asMessage.readAll()[1]?.asMessage.readAll();
+      _fieldCounter = status?[1]?.asInt ?? _fieldCounter;
+      log('TV pediu teclado (campo=$_fieldCounter)');
     } else if (msg.containsKey(3)) {
       log('remote_error recebido');
     }
@@ -233,6 +276,9 @@ class AndroidTvController extends BaseRemoteController {
     _socket?.destroy();
     _socket = null;
     _buffer.clear();
+    _imeCounter = null;
+    _fieldCounter = null;
+    _fieldValue = '';
     setState(next);
   }
 
@@ -286,6 +332,17 @@ class AndroidTvController extends BaseRemoteController {
   @override
   Future<void> sendText(String text) async {
     await ensureConnected();
+    final ime = _imeCounter;
+    final field = _fieldCounter;
+    if (ime != null && field != null) {
+      // Canal IME: acrescenta ao conteúdo atual do campo em foco.
+      final value = '$_fieldValue$text';
+      _socket!.add(RemoteMessages.imeBatchEdit(imeCounter: ime, fieldCounter: field, text: value));
+      _fieldValue = value;
+      log('texto via IME (${text.length} chars)');
+      return;
+    }
+    log('nenhum campo de texto em foco; enviando como teclas');
     for (final rune in text.runes) {
       final ch = String.fromCharCode(rune);
       final code = androidTvKeyCodeForChar(ch);

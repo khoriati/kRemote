@@ -263,6 +263,29 @@ void main() {
       expect(c.supportsApp(AppShortcut.globoplay), isTrue);
     });
 
+    test('texto usa o canal IME quando há campo em foco, senão teclas', () async {
+      final server = FakeRemoteServer(tv, trustedClientPem: client.certificatePem);
+      await server.start();
+      addTearDown(server.close);
+      final dev = device(port: server.port);
+      final c = AndroidTvController(dev, client, TlsTrust(deviceId: dev.id, store: MemoryPinStore()));
+      addTearDown(c.dispose);
+      await c.connect();
+
+      await c.sendText('ab');
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      expect(server.keyInjects, [(29, 3), (30, 3)], reason: 'sem campo em foco → teclas');
+      expect(server.imeEdits, isEmpty);
+
+      server.focusTextField(imeCounter: 7, fieldCounter: 3, value: 'x');
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      await c.sendText('senha 1');
+      await c.sendText('!');
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      expect(server.imeEdits, [(7, 3, 'xsenha 1'), (7, 3, 'xsenha 1!')]);
+      expect(server.keyInjects.length, 2, reason: 'não injeta teclas no caminho IME');
+    });
+
     test('cliente não confiável pela TV cai em needsPairing', () async {
       final other = ClientIdentity.generate();
       final server = FakeRemoteServer(tv, trustedClientPem: other.certificatePem);

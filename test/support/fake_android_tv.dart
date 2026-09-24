@@ -113,6 +113,27 @@ class FakeRemoteServer {
   late SecureServerSocket _server;
   final keyInjects = <(int, int)>[];
   final appLinks = <String>[];
+  final imeEdits = <(int, int, String)>[];
+  SecureSocket? _client;
+
+  /// Simula a TV anunciando um campo de texto em foco.
+  void focusTextField({int imeCounter = 7, int fieldCounter = 3, String value = ''}) {
+    final appInfo = ProtoWriter()
+      ..int32(1, imeCounter)
+      ..string(16, 'com.example.tv');
+    final status = ProtoWriter()
+      ..int32(1, fieldCounter)
+      ..string(2, value);
+    _client?.add(
+      _msg(
+        20,
+        ProtoWriter()
+          ..message(1, appInfo)
+          ..message(2, status),
+      ),
+    );
+  }
+
   final configured = Completer<void>();
   final activated = Completer<void>();
   final ponged = Completer<int>();
@@ -133,6 +154,7 @@ class FakeRemoteServer {
       ProtoWriter.frameVarint((ProtoWriter()..message(field, inner)).toBytes());
 
   void _serve(SecureSocket socket) {
+    _client = socket;
     final buf = <int>[];
     final info = ProtoWriter()
       ..string(1, 'FakeTV')
@@ -163,6 +185,10 @@ class FakeRemoteServer {
           keyInjects.add((k[1]!.asInt, k[2]!.asInt));
         } else if (m.containsKey(90)) {
           appLinks.add(m[90]!.asMessage.readAll()[1]!.asString);
+        } else if (m.containsKey(21)) {
+          final batch = m[21]!.asMessage.readAll();
+          final status = batch[3]!.asMessage.readAll()[2]!.asMessage.readAll();
+          imeEdits.add((batch[1]!.asInt, batch[2]!.asInt, status[2]!.asString));
         }
       }
     }, onError: (_) {});
