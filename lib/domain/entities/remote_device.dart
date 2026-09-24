@@ -84,6 +84,7 @@ class RemoteDevice {
     int? port,
     String? model,
     String? macAddress,
+    bool clearMac = false,
     int? pairingPort,
     bool? volumeViaCast,
   }) => RemoteDevice(
@@ -93,7 +94,7 @@ class RemoteDevice {
     port: port ?? this.port,
     protocol: protocol,
     model: model ?? this.model,
-    macAddress: macAddress ?? this.macAddress,
+    macAddress: clearMac ? null : (macAddress ?? this.macAddress),
     pairingPort: pairingPort ?? this.pairingPort,
     volumeViaCast: volumeViaCast ?? this.volumeViaCast,
   );

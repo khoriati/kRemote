@@ -33,6 +33,9 @@ void main() {
       const b = RemoteDevice(id: 'x', name: 'B', host: '2.2.2.2', port: 2, protocol: RemoteProtocol.roku);
       expect(a, b);
       expect(a.copyWith(name: 'C').name, 'C');
+      final withMac = a.copyWith(macAddress: 'AA:BB:CC:DD:EE:FF');
+      expect(withMac.macAddress, 'AA:BB:CC:DD:EE:FF');
+      expect(withMac.copyWith(clearMac: true).macAddress, isNull);
     });
   });
 

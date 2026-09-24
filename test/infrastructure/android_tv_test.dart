@@ -308,6 +308,35 @@ void main() {
       expect(server.keyInjects.last, (25, 3), reason: 'Cast falhou → injeta tecla');
     });
 
+    test('Power com aparelho inacessível orienta sobre standby em rede / MAC', () async {
+      final dev = device(port: 1);
+      final c = AndroidTvController(dev, client, TlsTrust(deviceId: dev.id, store: MemoryPinStore()));
+      addTearDown(c.dispose);
+      await expectLater(
+        c.sendKey(RemoteKey.power),
+        throwsA(isA<ConnectionException>().having((e) => e.message, 'message', contains('Standby em rede'))),
+      );
+      expect(c.capabilities, isNot(contains(RemoteCapability.wakeOnLan)));
+    });
+
+    test('Power com MAC e aparelho inacessível tenta Wake-on-LAN', () async {
+      const dev = RemoteDevice(
+        id: 'dev-1',
+        name: 'TV',
+        host: '127.0.0.1',
+        port: 1,
+        protocol: RemoteProtocol.androidTv,
+        macAddress: 'AA:BB:CC:DD:EE:FF',
+      );
+      final c = AndroidTvController(dev, client, TlsTrust(deviceId: dev.id, store: MemoryPinStore()));
+      addTearDown(c.dispose);
+      expect(c.capabilities, contains(RemoteCapability.wakeOnLan));
+      await expectLater(
+        c.wake(timeout: const Duration(seconds: 3)).timeout(const Duration(seconds: 10)),
+        completion(isFalse),
+      );
+    });
+
     test('sem identidade emparelhada vai direto para needsPairing, sem rede', () async {
       final dev = device(port: 1);
       final c = AndroidTvController(dev, null, TlsTrust(deviceId: dev.id, store: MemoryPinStore()));

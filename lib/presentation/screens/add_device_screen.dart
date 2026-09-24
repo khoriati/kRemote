@@ -282,8 +282,12 @@ class _ManualFormState extends State<_ManualForm> {
     super.dispose();
   }
 
-  bool get _wantsMac =>
-      const {RemoteProtocol.samsungTizen, RemoteProtocol.lgWebOs, RemoteProtocol.sonyBravia}.contains(_protocol);
+  bool get _wantsMac => const {
+    RemoteProtocol.androidTv,
+    RemoteProtocol.samsungTizen,
+    RemoteProtocol.lgWebOs,
+    RemoteProtocol.sonyBravia,
+  }.contains(_protocol);
 
   void _submit() {
     if (!_form.currentState!.validate()) return;

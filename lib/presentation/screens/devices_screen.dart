@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../app/app_scope.dart';
+import '../../application/device_service.dart';
 import '../../domain/entities/remote_device.dart';
 import 'add_device_screen.dart';
 import 'pairing_sheet.dart';
@@ -63,6 +64,13 @@ class DevicesScreen extends StatelessWidget {
                             d.volumeViaCast ? 'Volume por tecla (desligar Cast)' : 'Volume via Cast (recomendado)',
                           ),
                         ),
+                      if (d.protocol.isNetwork)
+                        PopupMenuItem(
+                          value: 'mac',
+                          child: Text(
+                            d.macAddress == null ? 'Definir MAC (ligar pela rede)' : 'Alterar MAC (${d.macAddress})',
+                          ),
+                        ),
                       const PopupMenuItem(value: 'trust', child: Text('Redefinir confiança (certificado)')),
                       const PopupMenuItem(value: 'delete', child: Text('Remover')),
                     ],
@@ -96,6 +104,38 @@ class DevicesScreen extends StatelessWidget {
       case 'pair':
         await svc.resetTrust(d.id);
         if (context.mounted) await PairingSheet.show(context, d);
+      case 'mac':
+        final ctrl = TextEditingController(text: d.macAddress ?? '');
+        final mac = await showDialog<String>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('Endereço MAC'),
+            content: TextField(
+              controller: ctrl,
+              autofocus: true,
+              autocorrect: false,
+              decoration: const InputDecoration(
+                hintText: 'AA:BB:CC:DD:EE:FF',
+                helperText: 'Chromecast: Configurações › Sistema › Sobre › Status',
+              ),
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancelar')),
+              FilledButton(
+                onPressed: () => Navigator.pop(ctx, ctrl.text.trim().toUpperCase()),
+                child: const Text('Salvar'),
+              ),
+            ],
+          ),
+        );
+        if (mac == null) return;
+        if (mac.isNotEmpty && !isValidMac(mac)) {
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('MAC inválido')));
+          }
+          return;
+        }
+        await svc.update(mac.isEmpty ? d.copyWith(clearMac: true) : d.copyWith(macAddress: mac));
       case 'castvol':
         await svc.update(d.copyWith(volumeViaCast: !d.volumeViaCast));
       case 'trust':

@@ -9,6 +9,7 @@ import '../../../domain/errors.dart';
 import '../../../domain/ports/remote_controller.dart';
 import '../../net/protobuf.dart';
 import '../../net/tls_trust.dart';
+import '../../net/wake_on_lan.dart';
 import '../base_controller.dart';
 import 'android_tv_certificate.dart';
 import 'android_tv_keys.dart';
@@ -77,7 +78,31 @@ class AndroidTvController extends BaseRemoteController {
   Set<RemoteKey> get supportedKeys => androidTvKeyCodes.keys.toSet();
 
   @override
-  Set<RemoteCapability> get capabilities => const {RemoteCapability.textInput, RemoteCapability.appLaunch};
+  Set<RemoteCapability> get capabilities => {
+    RemoteCapability.textInput,
+    RemoteCapability.appLaunch,
+    if (device.macAddress != null) RemoteCapability.wakeOnLan,
+  };
+
+  /// Acorda o aparelho por Wake-on-LAN e aguarda o serviço remoto responder.
+  /// Retorna verdadeiro se conseguiu conectar após o pacote mágico.
+  Future<bool> wake({Duration timeout = const Duration(seconds: 15)}) async {
+    final mac = device.macAddress;
+    if (mac == null) return false;
+    log('enviando Wake-on-LAN');
+    await const WakeOnLan().wake(mac, host: device.host);
+    final deadline = DateTime.now().add(timeout);
+    while (DateTime.now().isBefore(deadline)) {
+      await Future<void>.delayed(const Duration(seconds: 2));
+      try {
+        await connect();
+        if (currentState == DeviceConnectionState.connected) return true;
+      } on RemoteException {
+        // ainda acordando
+      }
+    }
+    return false;
+  }
 
   @override
   Future<void> connect() async {
@@ -230,6 +255,22 @@ class AndroidTvController extends BaseRemoteController {
       } on RemoteException catch (e) {
         // Cast indisponível: cai para a injeção de tecla convencional.
         log('volume via Cast falhou (${e.message}); usando tecla');
+      }
+    }
+    if (key == RemoteKey.power && currentState != DeviceConnectionState.connected) {
+      // Em "standby em rede" o serviço responde e a tecla Power liga o aparelho.
+      // Se o Wi-Fi está desligado em repouso, só Wake-on-LAN (com MAC) acorda.
+      try {
+        await ensureConnected();
+      } on RemoteException {
+        if (device.macAddress != null) {
+          if (await wake()) return; // acordou: não enviar Power (desligaria)
+          throw const ConnectionException('Aparelho não respondeu ao Wake-on-LAN');
+        }
+        throw const ConnectionException(
+          'Aparelho fora do alcance da rede. Ative "Standby em rede" nas configurações de energia '
+          'ou informe o MAC em Meus dispositivos para ligar por Wake-on-LAN.',
+        );
       }
     }
     await ensureConnected();
