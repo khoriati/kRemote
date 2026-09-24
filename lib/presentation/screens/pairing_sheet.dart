@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../../app/app_scope.dart';
 import '../../domain/entities/remote_device.dart';
 import '../../domain/ports/pairing_flow.dart';
+import '../../infrastructure/net/log.dart';
 
 /// Bottom sheet que conduz o emparelhamento de um dispositivo.
 class PairingSheet extends StatefulWidget {
@@ -44,6 +45,7 @@ class _PairingSheetState extends State<PairingSheet> {
     }
     _flow = flow;
     _sub = flow.state.listen((s) {
+      KLog.d('pairing', '${widget.device.name}: ${s.stage.name} ${s.message ?? ''}');
       if (!mounted) return;
       setState(() => _state = s);
       if (s.stage == PairingStage.success) {

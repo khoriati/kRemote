@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:isolate';
 import 'dart:typed_data';
 
 import 'package:basic_utils/basic_utils.dart';
@@ -31,6 +32,11 @@ class ClientIdentity {
     final cert = X509Utils.generateSelfSignedCertificate(priv, csr, 3650);
     return ClientIdentity(certificatePem: cert, privateKeyPem: CryptoUtils.encodeRSAPrivateKeyToPem(priv));
   }
+
+  /// Gera em isolate separado: a geração RSA em Dart puro pode levar vários
+  /// segundos em celulares e não deve travar a UI.
+  static Future<ClientIdentity> generateAsync({String commonName = 'kRemote'}) =>
+      Isolate.run(() => generate(commonName: commonName));
 
   /// Módulo e expoente RSA do certificado do cliente.
   RsaPublicNumbers get publicNumbers => RsaPublicNumbers.fromCertificateDer(_pemToDer(certificatePem));

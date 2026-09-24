@@ -12,7 +12,9 @@ import '../../domain/ports/remote_controller.dart';
 import '../widgets/dpad.dart';
 import '../widgets/remote_button.dart';
 import '../widgets/status_chip.dart';
+import '../../infrastructure/net/log.dart';
 import 'add_device_screen.dart';
+import 'debug_log_screen.dart';
 import 'devices_screen.dart';
 import 'pairing_sheet.dart';
 import 'settings_screen.dart';
@@ -44,6 +46,7 @@ class _RemoteScreenState extends State<RemoteScreen> {
     if (d == null || d.id == _boundId) return;
     // Marca antes de qualquer await para evitar bind duplicado no mesmo frame.
     _boundId = d.id;
+    KLog.d('ui', 'ativo: ${d.name} (${d.protocol.name} ${d.host}:${d.port}) emparelhado=${svc.isPaired(d)}');
     unawaited(_sub?.cancel());
     _sub = null;
     _controller = null;
@@ -74,8 +77,9 @@ class _RemoteScreenState extends State<RemoteScreen> {
   }
 
   void _toast(Object e) {
-    if (!mounted) return;
     final msg = e is RemoteException ? e.message : 'Erro: $e';
+    KLog.d('ui', 'aviso: $msg');
+    if (!mounted) return;
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
       ..showSnackBar(SnackBar(content: Text(msg)));
@@ -99,10 +103,12 @@ class _RemoteScreenState extends State<RemoteScreen> {
   }
 
   Future<void> _pair(RemoteDevice d) async {
+    KLog.d('ui', 'abrir emparelhamento ${d.name} (jaAberto=$_pairingOpen)');
     if (_pairingOpen) return;
     _pairingOpen = true;
     try {
       final ok = await PairingSheet.show(context, d);
+      KLog.d('ui', 'emparelhamento ${d.name} encerrado: ${ok == true ? 'sucesso' : 'cancelado/falha'}');
       if (ok == true && mounted) {
         _boundId = null;
         await _bind();
@@ -146,6 +152,12 @@ class _RemoteScreenState extends State<RemoteScreen> {
                     ),
                   ),
                 ),
+              IconButton(
+                tooltip: 'Diagnóstico',
+                icon: const Icon(Icons.bug_report_outlined),
+                onPressed: () =>
+                    Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => const DebugLogScreen())),
+              ),
               PopupMenuButton<String>(
                 tooltip: 'Mais',
                 onSelected: (v) => switch (v) {

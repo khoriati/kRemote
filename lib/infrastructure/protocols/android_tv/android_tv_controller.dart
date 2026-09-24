@@ -225,6 +225,7 @@ class AndroidTvController extends BaseRemoteController {
       if (press == KeyPress.longEnd) return;
       try {
         await fallback.sendKey(key);
+        log('${key.name} via Cast ok');
         return;
       } on RemoteException catch (e) {
         // Cast indisponível: cai para a injeção de tecla convencional.
@@ -238,6 +239,7 @@ class AndroidTvController extends BaseRemoteController {
       KeyPress.longEnd => RemoteMessages.directionEndLong,
     };
     _socket!.add(RemoteMessages.keyInject(code, dir));
+    log('key_inject ${key.name} ($code, dir=$dir)');
   }
 
   @override

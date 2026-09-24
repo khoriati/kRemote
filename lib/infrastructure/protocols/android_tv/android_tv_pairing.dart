@@ -92,13 +92,23 @@ class PairingMessages {
 
 /// Fluxo de emparelhamento Android TV Remote v2 (porta 6467, TLS mútuo).
 class AndroidTvPairingFlow implements PairingFlow {
-  AndroidTvPairingFlow(this.device, this.trust, {ClientIdentity? identity, this.clientName = 'kRemote'})
-    : _identity = identity ?? ClientIdentity.generate();
+  AndroidTvPairingFlow(
+    this.device,
+    this.trust, {
+    ClientIdentity? identity,
+    Future<ClientIdentity> Function()? identityProvider,
+    this.clientName = 'kRemote',
+  }) : _identity = identity, // ignore: prefer_initializing_formals
+       _identityProvider = identityProvider; // ignore: prefer_initializing_formals
 
   final RemoteDevice device;
   final TlsTrust trust;
   final String clientName;
-  final ClientIdentity _identity;
+
+  /// Identidade do cliente. Se ausente, obtida de [_identityProvider] (ou
+  /// gerada em isolate) no [start], sem bloquear a UI.
+  ClientIdentity? _identity;
+  final Future<ClientIdentity> Function()? _identityProvider;
 
   final _state = StreamController<PairingState>.broadcast();
   final _buffer = <int>[];
@@ -121,12 +131,15 @@ class AndroidTvPairingFlow implements PairingFlow {
 
   @override
   Future<void> start() async {
-    _emit(PairingStage.connecting, 'Conectando à TV…');
+    _emit(PairingStage.connecting, 'Preparando identidade…');
     try {
+      final identity = _identity ??= await (_identityProvider?.call() ?? ClientIdentity.generateAsync());
+      if (_stage == PairingStage.failure) return; // cancelado durante a geração
+      _emit(PairingStage.connecting, 'Conectando à TV…');
       await trust.load();
       final ctx = SecurityContext(withTrustedRoots: false)
-        ..useCertificateChainBytes(_identity.certificatePem.codeUnits)
-        ..usePrivateKeyBytes(_identity.privateKeyPem.codeUnits);
+        ..useCertificateChainBytes(identity.certificatePem.codeUnits)
+        ..usePrivateKeyBytes(identity.privateKeyPem.codeUnits);
       // Fechado em _close() via _socket.destroy().
       // ignore: close_sinks
       final socket = await SecureSocket.connect(
@@ -181,7 +194,7 @@ class AndroidTvPairingFlow implements PairingFlow {
     } else if (msg.containsKey(31)) {
       _emit(PairingStage.awaitingPin, 'Digite o código exibido na TV');
     } else if (msg.containsKey(41)) {
-      _credentials = _identity.toCredentials();
+      _credentials = _identity!.toCredentials();
       trust.commit().then((_) => _emit(PairingStage.success, 'Emparelhado com sucesso'));
       _close();
     }
@@ -191,7 +204,7 @@ class AndroidTvPairingFlow implements PairingFlow {
   Future<void> submit(String value) async {
     if (_stage != PairingStage.awaitingPin || _socket == null || _serverKey == null) return;
     try {
-      final secret = PairingSecret.compute(client: _identity.publicNumbers, server: _serverKey!, pin: value);
+      final secret = PairingSecret.compute(client: _identity!.publicNumbers, server: _serverKey!, pin: value);
       _emit(PairingStage.connecting, 'Validando código…');
       _socket!.add(PairingMessages.pairingSecret(secret));
     } on PairingException catch (e) {

@@ -8,6 +8,7 @@ import 'package:kremote/application/settings_service.dart';
 import 'package:kremote/domain/entities/remote_device.dart';
 import 'package:kremote/domain/entities/remote_key.dart';
 import 'package:kremote/infrastructure/controller_factory.dart';
+import 'package:kremote/infrastructure/protocols/android_tv/android_tv_certificate.dart';
 import 'package:kremote/infrastructure/protocols/bluetooth_hid/bluetooth_hid_channel.dart';
 import 'package:kremote/presentation/widgets/dpad.dart';
 import 'package:kremote/presentation/widgets/remote_button.dart';
@@ -15,9 +16,12 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../support/fakes.dart';
 
+/// Identidade pré-gerada: evita geração RSA (isolate real) dentro dos testes de widget.
+final ClientIdentity _identity = ClientIdentity.generate();
+
 Future<Widget> buildApp({List<RemoteDevice> devices = const []}) async {
   SharedPreferences.setMockInitialValues({});
-  final creds = MemoryCredentialStore();
+  final creds = MemoryCredentialStore()..data[ControllerFactory.appIdentityKey] = _identity.toCredentials();
   final pins = MemoryPinStore();
   final svc = DeviceService(
     repository: MemoryDeviceRepository()..saved = devices,

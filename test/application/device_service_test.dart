@@ -98,6 +98,16 @@ void main() {
       expect(svc.devices.first.name, 'Novo');
     });
 
+    test('identidade Android TV do app é única, persistida e reutilizada', () async {
+      final factory = ControllerFactory(credentials: creds, pins: pins);
+      final a = await factory.appIdentity();
+      final b = await factory.appIdentity();
+      expect(identical(a, b), isTrue);
+      expect(creds.data[ControllerFactory.appIdentityKey], isNotNull);
+      final again = await ControllerFactory(credentials: creds, pins: pins).appIdentity();
+      expect(again.certificatePem, a.certificatePem);
+    }, timeout: const Timeout(Duration(minutes: 2)));
+
     test('fábrica escolhe o adapter pelo protocolo', () async {
       final r = device(id: 'r', protocol: RemoteProtocol.roku, port: 8060);
       await svc.add(r);

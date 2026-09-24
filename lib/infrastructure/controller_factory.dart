@@ -3,6 +3,7 @@ import '../domain/ports/certificate_pin_store.dart';
 import '../domain/ports/credential_store.dart';
 import '../domain/ports/pairing_flow.dart';
 import '../domain/ports/remote_controller.dart';
+import 'net/log.dart';
 import 'net/tls_trust.dart';
 import 'protocols/android_tv/android_tv_certificate.dart';
 import 'protocols/android_tv/android_tv_controller.dart';
@@ -23,6 +24,25 @@ class ControllerFactory {
 
   final CredentialStore credentials;
   final CertificatePinStore pins;
+
+  /// Chave (no CredentialStore) da identidade única do app para Android TV.
+  static const appIdentityKey = 'app:android-tv-identity';
+  Future<ClientIdentity>? _identityFuture;
+
+  /// Identidade do cliente Android TV compartilhada por todos os aparelhos
+  /// (como faz o app Google Home). Gerada uma única vez, em isolate, e
+  /// guardada em armazenamento seguro. Chamar cedo aquece o cache.
+  Future<ClientIdentity> appIdentity() => _identityFuture ??= _loadOrCreateIdentity();
+
+  Future<ClientIdentity> _loadOrCreateIdentity() async {
+    final existing = ClientIdentity.fromCredentials(await credentials.read(appIdentityKey));
+    if (existing != null) return existing;
+    final sw = Stopwatch()..start();
+    final fresh = await ClientIdentity.generateAsync();
+    KLog.d('identity', 'identidade Android TV gerada em ${sw.elapsedMilliseconds} ms');
+    await credentials.write(appIdentityKey, fresh.toCredentials());
+    return fresh;
+  }
 
   TlsTrust _trust(RemoteDevice d) => TlsTrust(deviceId: d.id, store: pins);
 
@@ -57,7 +77,7 @@ class ControllerFactory {
 
   /// Fluxo de emparelhamento; `null` para protocolos que não o exigem.
   PairingFlow? pairing(RemoteDevice d) => switch (d.protocol) {
-    RemoteProtocol.androidTv => AndroidTvPairingFlow(d, _trust(d)),
+    RemoteProtocol.androidTv => AndroidTvPairingFlow(d, _trust(d), identityProvider: appIdentity),
     RemoteProtocol.samsungTizen => SamsungPairingFlow(d, _trust(d)),
     RemoteProtocol.lgWebOs => LgPairingFlow(d, _trust(d)),
     RemoteProtocol.sonyBravia => SonyPairingFlow(d),

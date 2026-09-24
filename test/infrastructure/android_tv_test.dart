@@ -171,6 +171,27 @@ void main() {
       expect(pins.pins[dev.id], TlsTrust.fingerprint(X509CertificateFake(tv)));
     });
 
+    test('obtém a identidade do provedor de forma assíncrona', () async {
+      final server = FakePairingServer(tv, trustedClientPem: client.certificatePem);
+      await server.start();
+      addTearDown(server.close);
+      final dev = device(pairingPort: server.port);
+      var calls = 0;
+      final flow = AndroidTvPairingFlow(
+        dev,
+        TlsTrust(deviceId: dev.id, store: MemoryPinStore()),
+        identityProvider: () async {
+          calls++;
+          return client;
+        },
+      );
+      final awaiting = flow.state.firstWhere((s) => s.stage == PairingStage.awaitingPin);
+      await flow.start();
+      await awaiting.timeout(const Duration(seconds: 10));
+      expect(calls, 1);
+      await flow.cancel();
+    });
+
     test('PIN errado é rejeitado localmente sem enviar segredo', () async {
       final server = FakePairingServer(tv, trustedClientPem: client.certificatePem);
       await server.start();

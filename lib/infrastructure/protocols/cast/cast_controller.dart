@@ -196,6 +196,9 @@ class CastController extends BaseRemoteController {
       if (vol != null) {
         _volume = (vol['level'] as num?)?.toDouble() ?? _volume;
         _muted = vol['muted'] as bool? ?? _muted;
+        log(
+          'status: volume=${(_volume * 100).round()}% mudo=$_muted apps=${(status['applications'] as List<dynamic>? ?? []).length}',
+        );
       }
       final apps = status['applications'] as List<dynamic>? ?? [];
       if (apps.isNotEmpty) {
@@ -253,6 +256,7 @@ class CastController extends BaseRemoteController {
     final vol = <String, dynamic>{};
     if (level != null) vol['level'] = level.clamp(0.0, 1.0);
     if (muted != null) vol['muted'] = muted;
+    log('SET_VOLUME $vol');
     _send(_receiver, CastMessageCodec.nsReceiver, {'type': 'SET_VOLUME', 'requestId': _requestId++, 'volume': vol});
   }
 
