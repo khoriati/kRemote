@@ -1,0 +1,30 @@
+import 'dart:convert';
+
+import 'package:shared_preferences/shared_preferences.dart';
+
+import '../../domain/entities/remote_device.dart';
+import '../../domain/ports/device_repository.dart';
+
+/// Persistência dos dispositivos (dados não sensíveis) em SharedPreferences.
+class PrefsDeviceRepository implements DeviceRepository {
+  static const _key = 'kremote.devices.v1';
+
+  @override
+  Future<List<RemoteDevice>> loadAll() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_key);
+    if (raw == null) return [];
+    try {
+      final list = jsonDecode(raw) as List<dynamic>;
+      return list.map((e) => RemoteDevice.fromJson(e as Map<String, dynamic>)).toList();
+    } on FormatException {
+      return [];
+    }
+  }
+
+  @override
+  Future<void> saveAll(List<RemoteDevice> devices) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_key, jsonEncode(devices.map((d) => d.toJson()).toList()));
+  }
+}

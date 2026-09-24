@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Roku (ECP), Sony (IRCC) e Philips (JointSpace) só expõem HTTP em texto claro
+  na rede local, por especificação dos fabricantes. O tráfego é restrito à LAN
+  e nunca transporta credenciais do usuário além da PSK Sony, informada por
+  ele para este fim. Protocolos com TLS usam pinning (ver TlsTrust).
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>
