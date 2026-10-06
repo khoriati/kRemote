@@ -273,12 +273,26 @@ class DeviceService extends ChangeNotifier {
     return result;
   }
 
+  /// Sondagens da porta de repouso por verificação: em standby o Wi-Fi da TV
+  /// só entrega pacotes em janelas curtas e a primeira tentativa costuma expirar.
+  static const standbyProbes = 3;
+
   Future<Presence> _probeOnce(RemoteDevice d, PortProbe probe) async {
     final standbyPort = d.protocol.standbyPort;
     if (standbyPort == null) return await probe(d.host, d.port) ? Presence.online : Presence.offline;
     final (main, standby) = await (probe(d.host, d.port), probe(d.host, standbyPort)).wait;
     if (main) return Presence.online;
-    if (standby) return Presence.standby;
+    var asleep = standby;
+    for (var i = 1; !asleep && i < standbyProbes; i++) {
+      asleep = await probe(d.host, standbyPort);
+    }
+    KLog.d('devices', '${d.name}: sonda ${d.host} ${d.port}=não $standbyPort=${asleep ? 'sim' : 'não'}');
+    if (asleep) return Presence.standby;
+    // Anunciada há pouco no mDNS/SSDP neste IP: está na rede, só dormindo.
+    if (_scanner?.found.any((f) => f.host == d.host) ?? false) {
+      KLog.d('devices', '${d.name}: sem resposta TCP, mas anunciada na rede em ${d.host} → repouso');
+      return Presence.standby;
+    }
     return Presence.offline;
   }
 

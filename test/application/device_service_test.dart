@@ -429,6 +429,16 @@ void relocationTests() {
       expect(await svc.probePresence(svc.active!), Presence.online);
     });
 
+    test('sem resposta TCP mas anunciada no mDNS no mesmo IP conta como repouso', () async {
+      repo.saved = [sala()];
+      await svc.load();
+      disc.next = [
+        const DiscoveredDevice(name: 'Sala', host: '192.168.1.50', port: 8009, protocol: RemoteProtocol.cast),
+      ];
+      await svc.relocate(svc.active!); // popula o cache do scanner
+      expect(await svc.probePresence(svc.active!), Presence.standby);
+    });
+
     test('isReachable usa o probe e registra presença', () async {
       repo.saved = [sala()];
       await svc.load();

@@ -165,7 +165,14 @@ class _RemoteScreenState extends State<RemoteScreen> with WidgetsBindingObserver
         return;
       }
       if (located != null) {
-        // Visto na rede no mesmo endereço, mas não conectou: uma nova tentativa.
+        // Vista na rede no mesmo endereço: se o serviço de controle segue
+        // mudo, a TV está em repouso — não é falha e não adianta insistir.
+        if (await svc.probePresence(d) != Presence.online) {
+          if (!mounted) return;
+          KLog.d('ui', '${d.name} anunciada em ${d.host} mas sem serviço de controle: em repouso');
+          setState(() => _state = DeviceConnectionState.standby);
+          return;
+        }
         try {
           await svc.connect(d);
           return;
