@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -7,6 +8,7 @@ import 'package:flutter/services.dart';
 import 'app/app.dart';
 import 'app/app_scope.dart';
 import 'application/device_service.dart';
+import 'application/network_scanner.dart';
 import 'application/settings_service.dart';
 import 'infrastructure/controller_factory.dart';
 import 'infrastructure/discovery/composite_discovery.dart';
@@ -24,17 +26,21 @@ Future<void> main() async {
 
   final secure = SecureCredentialStore();
   final factory = ControllerFactory(credentials: secure, pins: secure.pins);
+  final scanner = NetworkScanner(CompositeDiscovery([MdnsDiscovery(), SsdpDiscovery()]));
   final devices = DeviceService(
     repository: PrefsDeviceRepository(),
     credentials: secure,
     pins: secure.pins,
     factory: factory,
+    scanner: scanner,
     probe: (host, port) async {
       try {
         final s = await Socket.connect(host, port, timeout: const Duration(seconds: 2));
         s.destroy();
         return true;
       } on SocketException {
+        return false;
+      } on TimeoutException {
         return false;
       }
     },
@@ -46,7 +52,7 @@ Future<void> main() async {
     AppScope(
       devices: devices,
       settings: settings,
-      discovery: CompositeDiscovery([MdnsDiscovery(), SsdpDiscovery()]),
+      scanner: scanner,
       bluetooth: const BluetoothHidChannel(),
       child: const KRemoteApp(),
     ),

@@ -3,7 +3,7 @@
 #   scripts/build-android.sh debug            # APK de depuração (instalável direto)
 #   scripts/build-android.sh release          # APK release (assinado se houver keystore)
 #   scripts/build-android.sh bundle           # AAB para a Play Store
-#   scripts/build-android.sh install [debug]  # compila e instala no aparelho conectado (Moto G50 etc.)
+#   scripts/build-android.sh install [debug|release] [id]  # deploy: compila e instala por cima (mantém dados)
 #
 # Assinatura release: exporte as variáveis abaixo (ou crie android/key.properties):
 #   KEYSTORE_PATH, KEYSTORE_PASSWORD, KEY_ALIAS, KEY_PASSWORD
@@ -51,11 +51,23 @@ case "$MODE" in
     ;;
   install)
     SUB="${2:-debug}"
-    DEVICE="$(flutter devices --machine | python3 -c 'import sys,json;d=[x for x in json.load(sys.stdin) if x["targetPlatform"].startswith("android")];print(d[0]["id"] if d else "")')"
+    DEVICE="${3:-$(flutter devices --machine | python3 -c 'import sys,json;d=[x for x in json.load(sys.stdin) if x["targetPlatform"].startswith("android")];print(d[0]["id"] if d else "")')}"
     [[ -n "$DEVICE" ]] || die "Nenhum Android conectado (ative a depuração USB)"
-    log "Instalando ($SUB) em $DEVICE"
-    flutter install -d "$DEVICE" --"$SUB"
-    ok "Instalado"
+    if [[ "$SUB" == "release" ]]; then
+      write_key_properties
+      log "APK release v$VERSION ($NUMBER) — ofuscado, sem debug"
+      flutter build apk --release --build-name "$VERSION" --build-number "$NUMBER" --obfuscate --split-debug-info=build/symbols/android
+    else
+      log "APK debug v$VERSION ($NUMBER)"
+      flutter build apk --debug --build-name "$VERSION" --build-number "$NUMBER"
+    fi
+    log "Instalando ($SUB) em $DEVICE (atualização por cima, preserva cadastros e emparelhamentos)"
+    require adb
+    adb -s "$DEVICE" get-state >/dev/null 2>&1 || die "Aparelho $DEVICE não está visível ao adb (cabo USB / depuração)"
+    # `flutter install` desinstala antes; `adb install -r` atualiza mantendo os dados.
+    adb -s "$DEVICE" install -r "build/app/outputs/flutter-apk/app-$SUB.apk" \
+      || { warn "adb install -r falhou (assinatura diferente?); usando flutter install (apaga os dados do app)"; flutter install -d "$DEVICE" --"$SUB"; }
+    ok "Instalado — abra o kRemote no aparelho"
     exit 0
     ;;
   *) die "modo desconhecido: $MODE (debug|release|bundle|install)" ;;

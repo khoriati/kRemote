@@ -69,9 +69,15 @@ void main() {
   });
 
   group('AppShortcut', () {
-    test('todo atalho tem deep link Android TV (caminho crítico)', () {
+    test('todo atalho tem deep link ou pacote Android TV (caminho crítico)', () {
+      final valid = RegExp(r'^(https://\S+|market://launch\?id=[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+)$');
       for (final a in AppShortcut.all) {
-        expect(a.ids['androidTv'], startsWith('https://'), reason: a.id);
+        final spec = a.ids['androidTv'];
+        expect(spec, isNotNull, reason: a.id);
+        for (final candidate in spec!.split(' ')) {
+          expect(candidate, matches(valid), reason: '${a.id}: $candidate');
+        }
+        expect(a.asset, 'assets/apps/${a.id}.png');
       }
     });
   });

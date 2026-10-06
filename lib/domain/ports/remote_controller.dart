@@ -22,9 +22,19 @@ abstract class RemoteController {
   /// Digita texto no campo com foco (quando [RemoteCapability.textInput]).
   Future<void> sendText(String text) async => throw UnsupportedError('sendText');
 
+  /// Envia um único caractere como pressionamento de tecla (teclado do
+  /// controle). Por padrão delega a [sendText].
+  Future<void> sendChar(String ch) => sendText(ch);
+
   /// Abre um app (quando [RemoteCapability.appLaunch]).
   Future<void> launchApp(AppShortcut app) async => throw UnsupportedError('launchApp');
 
   bool supportsApp(AppShortcut app) =>
       capabilities.contains(RemoteCapability.appLaunch) && app.ids.containsKey(device.protocol.name);
+
+  /// Consulta ao aparelho quais dos [apps] estão realmente instalados.
+  ///
+  /// Devolve o subconjunto confirmado, ou `null` quando o protocolo não
+  /// permite verificar (a UI então mostra todos os atalhos suportados).
+  Future<Set<AppShortcut>?> installedApps(List<AppShortcut> apps) async => null;
 }

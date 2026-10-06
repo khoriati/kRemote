@@ -88,7 +88,13 @@ class FakePairingServer {
             final ok = expected != null && _eq(secret, expected!);
             lastSecretStatus = ok ? 200 : 402;
             socket.add(_wrap(41, ProtoWriter()..bytes(1, expected ?? Uint8List(0)), status: lastSecretStatus!));
-            if (!ok) socket.destroy();
+            // Como a TV real: encerra a conexão logo após responder ao segredo.
+            if (ok) {
+              // O cliente pode derrubar a conexão antes do flush: ignora.
+              unawaited(socket.close().catchError((_) => socket));
+            } else {
+              socket.destroy();
+            }
         }
       }
     }, onError: (_) {});
@@ -113,6 +119,9 @@ class FakeRemoteServer {
   late SecureServerSocket _server;
   final keyInjects = <(int, int)>[];
   final appLinks = <String>[];
+
+  /// Links que a "TV" recusa com `remote_error`.
+  final rejectedLinks = <String>{};
   final imeEdits = <(int, int, String)>[];
   SecureSocket? _client;
 
@@ -147,7 +156,9 @@ class FakeRemoteServer {
       ..setTrustedCertificatesBytes(trustedClientPem.codeUnits)
       ..setClientAuthoritiesBytes(trustedClientPem.codeUnits);
     _server = await SecureServerSocket.bind('127.0.0.1', 0, ctx, requestClientCertificate: true);
-    _server.listen(_serve, onError: (Object _) {});
+    // Handshakes abortados pelo cliente (ex.: dispose durante um reconnect)
+    // chegam como erro assíncrono fora do stream; não podem derrubar o teste.
+    runZonedGuarded(() => _server.listen(_serve, onError: (Object _) {}), (_, _) {});
   }
 
   Uint8List _msg(int field, ProtoWriter inner) =>
@@ -184,7 +195,13 @@ class FakeRemoteServer {
           final k = m[10]!.asMessage.readAll();
           keyInjects.add((k[1]!.asInt, k[2]!.asInt));
         } else if (m.containsKey(90)) {
-          appLinks.add(m[90]!.asMessage.readAll()[1]!.asString);
+          final link = m[90]!.asMessage.readAll()[1]!.asString;
+          appLinks.add(link);
+          if (rejectedLinks.contains(link)) {
+            // Como a TV real: remote_error 7 e fecha a conexão.
+            socket.add(_msg(3, ProtoWriter()..int32(1, 7)));
+            unawaited(socket.close().catchError((_) => socket));
+          }
         } else if (m.containsKey(21)) {
           final batch = m[21]!.asMessage.readAll();
           final status = batch[3]!.asMessage.readAll()[2]!.asMessage.readAll();

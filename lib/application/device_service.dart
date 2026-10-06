@@ -14,6 +14,7 @@ import '../domain/ports/remote_controller.dart';
 import '../infrastructure/controller_factory.dart';
 import '../infrastructure/net/log.dart';
 import '../infrastructure/protocols/base_controller.dart';
+import 'network_scanner.dart';
 
 /// Validação de host (IPv4, IPv6 ou hostname RFC 1123) para entrada manual.
 bool isValidHost(String host) {
@@ -44,7 +45,9 @@ class DeviceService extends ChangeNotifier {
     required CertificatePinStore pins,
     required ControllerFactory factory,
     PortProbe? probe,
+    NetworkScanner? scanner,
   }) : _probe = probe, // ignore: prefer_initializing_formals
+       _scanner = scanner, // ignore: prefer_initializing_formals
        _repo = repository,
        _creds = credentials,
        // ignore: prefer_initializing_formals
@@ -57,12 +60,21 @@ class DeviceService extends ChangeNotifier {
   final CertificatePinStore _pins;
   final ControllerFactory _factory;
   final PortProbe? _probe;
+  final NetworkScanner? _scanner;
 
   final List<RemoteDevice> _devices = [];
   final Map<String, RemoteController> _controllers = {};
   final Map<String, bool> _paired = {};
+  final Map<String, bool> _online = {};
   String? _activeId;
   bool _loaded = false;
+
+  /// Intervalo mínimo entre varreduras mDNS disparadas pela presença.
+  static const relocateCooldown = Duration(seconds: 20);
+  Timer? _presenceTimer;
+  int _presenceWatchers = 0;
+  bool _refreshingPresence = false;
+  DateTime? _lastSweep;
 
   List<RemoteDevice> get devices => List.unmodifiable(_devices);
   bool get isLoaded => _loaded;
@@ -161,6 +173,7 @@ class DeviceService extends ChangeNotifier {
     await _pins.delete(id);
     await _pins.delete('$id-cast');
     _paired.remove(id);
+    _online.remove(id);
     if (_activeId == id) _activeId = _devices.firstOrNull?.id;
     await _repo.saveAll(_devices);
     notifyListeners();
@@ -180,6 +193,142 @@ class DeviceService extends ChangeNotifier {
     if (_activeId == id) return;
     _activeId = id;
     notifyListeners();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Presença na rede (heartbeat) e relocalização por mudança de IP
+  // ---------------------------------------------------------------------------
+
+  /// Última verificação de presença: `true`/`false`, ou `null` se ainda não
+  /// verificado (ou protocolo sem rede).
+  bool? isOnline(RemoteDevice d) => _online[d.id];
+
+  /// Verifica se `host:port` do aparelho responde a TCP (rápido, ~2 s).
+  Future<bool> isReachable(RemoteDevice d) async {
+    final probe = _probe;
+    if (probe == null || !d.protocol.isNetwork) return true;
+    final ok = await probe(d.host, d.port);
+    if (_online[d.id] != ok) {
+      _online[d.id] = ok;
+      notifyListeners();
+    }
+    return ok;
+  }
+
+  /// Mantém a verificação periódica de presença enquanto houver observadores
+  /// (telas que listam aparelhos). Aparelhos fora da rede são procurados por
+  /// mDNS/SSDP e, se reapareceram com outro IP, têm o endereço atualizado.
+  void watchPresence({Duration every = const Duration(seconds: 5)}) {
+    if (++_presenceWatchers > 1) return;
+    unawaited(refreshPresence());
+    _presenceTimer = Timer.periodic(every, (_) => refreshPresence());
+  }
+
+  void unwatchPresence() {
+    if (_presenceWatchers == 0) return;
+    if (--_presenceWatchers == 0) {
+      _presenceTimer?.cancel();
+      _presenceTimer = null;
+    }
+  }
+
+  Future<void> refreshPresence() async {
+    final probe = _probe;
+    if (probe == null || _refreshingPresence) return;
+    _refreshingPresence = true;
+    try {
+      final targets = _devices.where((d) => d.protocol.isNetwork).toList();
+      final results = await Future.wait(targets.map((d) => probe(d.host, d.port)));
+      var changed = false;
+      for (var i = 0; i < targets.length; i++) {
+        if (_online[targets[i].id] != results[i]) {
+          _online[targets[i].id] = results[i];
+          changed = true;
+        }
+      }
+      if (changed) notifyListeners();
+      final offline = targets.where((d) => _online[d.id] == false).toList();
+      final now = DateTime.now();
+      if (offline.isNotEmpty &&
+          _scanner != null &&
+          (_lastSweep == null || now.difference(_lastSweep!) >= relocateCooldown)) {
+        _lastSweep = now;
+        await _sweep(offline);
+      }
+    } finally {
+      _refreshingPresence = false;
+    }
+  }
+
+  /// Uma varredura para todos os aparelhos [offline] de uma vez.
+  Future<void> _sweep(List<RemoteDevice> offline) async {
+    final found = await _scanner!.scan();
+    for (final d in offline) {
+      final match = _bestMatch(d, found);
+      if (match == null || match.host == d.host) continue;
+      await _moveTo(d, match);
+    }
+  }
+
+  /// Procura o aparelho na rede pela identidade (nome do serviço/nome).
+  /// Retorna o cadastro atualizado se o IP mudou, o próprio [d] se foi visto
+  /// no mesmo endereço, ou `null` se não foi encontrado.
+  Future<RemoteDevice?> relocate(RemoteDevice d, {Duration? timeout}) async {
+    final scanner = _scanner;
+    if (scanner == null || !d.protocol.isNetwork) return null;
+    KLog.d('devices', '${d.name}: procurando na rede (atual ${d.host})');
+    final found = await scanner.scan(timeout: timeout);
+    final match = _bestMatch(d, found);
+    if (match == null) {
+      KLog.d('devices', '${d.name}: não encontrado na rede');
+      return null;
+    }
+    if (match.host == d.host) return d;
+    return _moveTo(d, match);
+  }
+
+  Future<RemoteDevice> _moveTo(RemoteDevice d, DiscoveredDevice match) async {
+    KLog.d('devices', '${d.name}: endereço ${d.host} → ${match.host}');
+    final moved = d.copyWith(
+      host: match.host,
+      serviceName: d.serviceName ?? (match.protocol == d.protocol ? match.serviceName : null),
+    );
+    _online[d.id] = true;
+    await update(moved);
+    return moved;
+  }
+
+  /// Cadastro correspondente a um aparelho descoberto (mesma identidade),
+  /// ainda que o IP tenha mudado desde o cadastro.
+  RemoteDevice? findRegistered(DiscoveredDevice f) =>
+      _devices.where((d) => d.id == f.toDevice().id || matches(d, f)).firstOrNull;
+
+  /// Um achado [f] é o mesmo aparelho que o cadastro [d]?
+  ///
+  /// Um Google TV cadastrado pode ser visto tanto como Android TV quanto como
+  /// receptor Cast (mesmo host). A identidade forte é o nome da instância
+  /// mDNS/SSDP; o nome amigável é o recurso para cadastros antigos/manuais.
+  static bool matches(RemoteDevice d, DiscoveredDevice f) {
+    final family =
+        d.protocol == f.protocol || (d.protocol == RemoteProtocol.androidTv && f.protocol == RemoteProtocol.cast);
+    if (!family) return false;
+    final sn = d.serviceName;
+    if (sn != null && f.serviceName != null && d.protocol == f.protocol) return sn == f.serviceName;
+    return f.name.trim().toLowerCase() == d.name.trim().toLowerCase();
+  }
+
+  DiscoveredDevice? _bestMatch(RemoteDevice d, List<DiscoveredDevice> found) {
+    final candidates = found.where((f) => matches(d, f)).toList();
+    if (candidates.isEmpty) return null;
+    // Prefere o mesmo protocolo (identidade mais forte) e, entre iguais, o
+    // que responde no host atual.
+    candidates.sort((a, b) {
+      final pa = a.protocol == d.protocol ? 0 : 1;
+      final pb = b.protocol == d.protocol ? 0 : 1;
+      if (pa != pb) return pa.compareTo(pb);
+      return (a.host == d.host ? 0 : 1).compareTo(b.host == d.host ? 0 : 1);
+    });
+    return candidates.first;
   }
 
   /// Controlador do dispositivo (criado sob demanda e mantido vivo para
@@ -202,6 +351,8 @@ class DeviceService extends ChangeNotifier {
 
   Future<void> sendText(RemoteDevice d, String text) async => (await controller(d)).sendText(text);
 
+  Future<void> sendChar(RemoteDevice d, String ch) async => (await controller(d)).sendChar(ch);
+
   Future<void> launchApp(RemoteDevice d, AppShortcut app) async => (await controller(d)).launchApp(app);
 
   /// Inicia o emparelhamento; ao concluir, persiste credenciais e recria o
@@ -210,14 +361,16 @@ class DeviceService extends ChangeNotifier {
     final flow = _factory.pairing(d);
     if (flow == null) return null;
     late StreamSubscription<PairingState> sub;
+    // Só o sucesso encerra a escuta: uma falha transitória (ex.: socket
+    // fechado pela TV logo após o ack) não pode descartar um sucesso que
+    // chegue em seguida. O fluxo fecha o stream ao ser cancelado pela UI.
     sub = flow.state.listen((s) async {
       if (s.stage == PairingStage.success && flow.credentials != null) {
         await _creds.write(d.id, flow.credentials!);
         await _disposeController(d.id);
         _paired[d.id] = true;
+        KLog.d('devices', '${d.name}: credenciais gravadas, emparelhado');
         notifyListeners();
-        await sub.cancel();
-      } else if (s.stage == PairingStage.failure) {
         await sub.cancel();
       }
     });
@@ -234,6 +387,7 @@ class DeviceService extends ChangeNotifier {
 
   @override
   void dispose() {
+    _presenceTimer?.cancel();
     for (final c in _controllers.values) {
       c.disconnect();
       if (c is BaseRemoteController) c.dispose();

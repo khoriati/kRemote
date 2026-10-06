@@ -148,7 +148,7 @@ void main() {
       final server = FakePairingServer(tv, trustedClientPem: client.certificatePem);
       await server.start();
       addTearDown(server.close);
-      final pins = MemoryPinStore();
+      final pins = SlowPinStore();
       final dev = device(pairingPort: server.port);
       final flow = AndroidTvPairingFlow(
         dev,
@@ -165,6 +165,9 @@ void main() {
       await flow.start();
       await done.future.timeout(const Duration(seconds: 15));
       expect(stages.last, PairingStage.success, reason: stages.toString());
+      // Regressão: o fechamento do socket após o ack chegava como "falha"
+      // antes do sucesso e o app descartava as credenciais.
+      expect(stages, isNot(contains(PairingStage.failure)), reason: stages.toString());
       expect(server.received, [10, 20, 30, 40]);
       expect(server.lastSecretStatus, 200);
       expect(flow.credentials, isNotNull);
@@ -286,6 +289,28 @@ void main() {
       expect(server.keyInjects.length, 2, reason: 'não injeta teclas no caminho IME');
     });
 
+    test('launchApp tenta a alternativa quando a TV recusa o primeiro link', () async {
+      final server = FakeRemoteServer(tv, trustedClientPem: client.certificatePem)
+        ..rejectedLinks.add('market://launch?id=com.globo.globotv');
+      await server.start();
+      addTearDown(server.close);
+      final dev = device(port: server.port);
+      final c = AndroidTvController(dev, client, TlsTrust(deviceId: dev.id, store: MemoryPinStore()));
+      addTearDown(c.dispose);
+      await c.launchApp(AppShortcut.globoplay);
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(server.appLinks, ['market://launch?id=com.globo.globotv', 'https://globoplay.globo.com']);
+      expect(c.currentState, DeviceConnectionState.connected, reason: 'reconectou após a recusa');
+      server.appLinks.clear();
+      await c.launchApp(AppShortcut.youtube);
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(server.appLinks, ['https://www.youtube.com'], reason: 'aceito: não tenta mais nada');
+
+      server.rejectedLinks.addAll(AppShortcut.youtube.ids['androidTv']!.split(' '));
+      await expectLater(c.launchApp(AppShortcut.youtube), throwsA(isA<ProtocolException>()));
+      expect(c.currentState, DeviceConnectionState.connected, reason: 'sessão restabelecida após recusar tudo');
+    });
+
     test('cliente não confiável pela TV cai em needsPairing', () async {
       final other = ClientIdentity.generate();
       final server = FakeRemoteServer(tv, trustedClientPem: other.certificatePem);
@@ -315,7 +340,7 @@ void main() {
         dev,
         client,
         TlsTrust(deviceId: dev.id, store: MemoryPinStore()),
-        volumeFallback: cast,
+        cast: cast,
       );
       addTearDown(c.dispose);
       await c.sendKey(RemoteKey.volumeUp);

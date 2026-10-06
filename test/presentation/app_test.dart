@@ -4,6 +4,7 @@ import 'package:kremote/app/app.dart';
 import 'package:kremote/app/app_scope.dart';
 import 'package:kremote/app/theme.dart';
 import 'package:kremote/application/device_service.dart';
+import 'package:kremote/application/network_scanner.dart';
 import 'package:kremote/application/settings_service.dart';
 import 'package:kremote/domain/entities/remote_device.dart';
 import 'package:kremote/domain/entities/remote_key.dart';
@@ -35,7 +36,7 @@ Future<Widget> buildApp({List<RemoteDevice> devices = const []}) async {
   return AppScope(
     devices: svc,
     settings: settings,
-    discovery: FakeDiscovery(const []),
+    scanner: NetworkScanner(FakeDiscovery(const [])),
     bluetooth: const BluetoothHidChannel(),
     child: const KRemoteApp(),
   );

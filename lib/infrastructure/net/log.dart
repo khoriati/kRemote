@@ -10,15 +10,18 @@ typedef LogSink = void Function(String scope, String message);
 
 class LogEntry {
   LogEntry(this.time, this.scope, this.message);
-  final DateTime time;
+  DateTime time;
   final String scope;
   final String message;
+
+  /// Quantas vezes seguidas a mesma mensagem foi registrada (colapsadas).
+  int count = 1;
 
   String format() {
     String two(int n) => n.toString().padLeft(2, '0');
     final t =
         '${two(time.hour)}:${two(time.minute)}:${two(time.second)}.${time.millisecond.toString().padLeft(3, '0')}';
-    return '$t [$scope] $message';
+    return '$t [$scope] $message${count > 1 ? ' (×$count)' : ''}';
   }
 }
 
@@ -36,6 +39,14 @@ class KLog {
   static Stream<void> get changes => _changes.stream;
 
   static void d(String scope, String message) {
+    final last = _entries.isEmpty ? null : _entries.last;
+    if (last != null && last.scope == scope && last.message == message) {
+      // Mesma mensagem repetida (ex.: busca periódica): só atualiza o contador.
+      last.count++;
+      last.time = DateTime.now();
+      if (_changes.hasListener) _changes.add(null);
+      return;
+    }
     _entries.addLast(LogEntry(DateTime.now(), scope, message));
     while (_entries.length > maxEntries) {
       _entries.removeFirst();

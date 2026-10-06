@@ -73,17 +73,18 @@ class RemoteMessages {
 
 /// Controlador Google TV / Android TV (Android TV Remote v2, porta 6466).
 class AndroidTvController extends BaseRemoteController {
-  AndroidTvController(super.device, this.identity, this.trust, {RemoteController? volumeFallback})
+  AndroidTvController(super.device, this.identity, this.trust, {RemoteController? cast})
     // ignore: prefer_initializing_formals
-    : _volumeFallback = volumeFallback;
+    : _cast = cast;
 
   /// Identidade emparelhada; `null` enquanto o aparelho não foi emparelhado.
   final ClientIdentity? identity;
   final TlsTrust trust;
 
-  /// Controlador Cast do mesmo aparelho, usado para volume quando
-  /// [RemoteDevice.volumeViaCast] está ativo.
-  final RemoteController? _volumeFallback;
+  /// Controlador Cast do mesmo aparelho (porta 8009): volume quando
+  /// [RemoteDevice.volumeViaCast] está ativo e consulta de apps instalados.
+  final RemoteController? _cast;
+  RemoteController? get _volumeFallback => device.volumeViaCast ? _cast : null;
 
   static const _volumeKeys = {RemoteKey.volumeUp, RemoteKey.volumeDown, RemoteKey.mute};
 
@@ -156,7 +157,18 @@ class AndroidTvController extends BaseRemoteController {
       );
       _socket = socket;
       await trust.commit();
-      socket.listen(_onData, onError: _onError, onDone: _onDone, cancelOnError: true);
+      // Eventos de um socket antigo (ex.: fechado pela TV após remote_error)
+      // não podem derrubar a conexão nova que o substituiu.
+      socket.listen(
+        _onData,
+        onError: (Object e) {
+          if (identical(socket, _socket)) _onError(e);
+        },
+        onDone: () {
+          if (identical(socket, _socket)) _onDone();
+        },
+        cancelOnError: true,
+      );
       _armWatchdog();
       await _ready!.future.timeout(
         const Duration(seconds: 10),
@@ -229,6 +241,9 @@ class AndroidTvController extends BaseRemoteController {
       final inject = msg[20]!.asMessage.readAll();
       final appInfo = inject[1]?.asMessage.readAll();
       final status = inject[2]?.asMessage.readAll();
+      log(
+        'ime_key_inject campos=${inject.keys.toList()} app_info=${appInfo?.keys.toList()} status=${status?.keys.toList()}',
+      );
       _imeCounter = appInfo?[1]?.asInt ?? _imeCounter;
       _fieldCounter = status?[1]?.asInt ?? _fieldCounter;
       _fieldValue = status?[2]?.asString ?? '';
@@ -245,7 +260,13 @@ class AndroidTvController extends BaseRemoteController {
       _fieldCounter = status?[1]?.asInt ?? _fieldCounter;
       log('TV pediu teclado (campo=$_fieldCounter)');
     } else if (msg.containsKey(3)) {
-      log('remote_error recebido');
+      final err = msg[3]!.asMessage.readAll();
+      final value = err[1]?.asInt;
+      // Códigos observados: 7 = app link inválido/não tratado (a TV fecha a
+      // conexão logo depois; o launchApp reconecta e tenta a alternativa).
+      log('remote_error value=$value${value == 7 ? ' (app link recusado)' : ''}');
+      final waiter = _launchError;
+      if (waiter != null && !waiter.isCompleted) waiter.complete();
     }
   }
 
@@ -261,6 +282,7 @@ class AndroidTvController extends BaseRemoteController {
   }
 
   void _onDone() {
+    log('TV encerrou a conexão (estado ${currentState.name})');
     if (currentState == DeviceConnectionState.connecting) {
       // A TV fecha o socket sem handshake TLS explícito quando não reconhece o cliente.
       _teardown(DeviceConnectionState.needsPairing);
@@ -279,13 +301,31 @@ class AndroidTvController extends BaseRemoteController {
     _imeCounter = null;
     _fieldCounter = null;
     _fieldValue = '';
+    _launchError = null;
     setState(next);
   }
 
   @override
   Future<void> disconnect() async {
     _teardown(DeviceConnectionState.disconnected);
-    await _volumeFallback?.disconnect();
+    await _cast?.disconnect();
+  }
+
+  /// O protocolo Android TV Remote não lista apps; a verificação vem do canal
+  /// Cast do mesmo aparelho. Apps sem id Cast não são verificáveis e ficam.
+  @override
+  Future<Set<AppShortcut>?> installedApps(List<AppShortcut> apps) async {
+    final cast = _cast;
+    if (cast == null) return null;
+    final verifiable = apps.where((a) => a.ids['cast'] != null).toList();
+    try {
+      final ok = await cast.installedApps(verifiable);
+      if (ok == null) return null;
+      return {...ok, ...apps.where((a) => a.ids['cast'] == null)};
+    } on RemoteException catch (e) {
+      log('verificação de apps via Cast falhou: ${e.message}');
+      return null;
+    }
   }
 
   @override
@@ -326,7 +366,13 @@ class AndroidTvController extends BaseRemoteController {
       KeyPress.longEnd => RemoteMessages.directionEndLong,
     };
     _socket!.add(RemoteMessages.keyInject(code, dir));
-    log('key_inject ${key.name} ($code, dir=$dir)');
+    log(
+      'key_inject ${key.name} (code=$code, ${switch (dir) {
+        RemoteMessages.directionShort => 'curto',
+        RemoteMessages.directionStartLong => 'longo início',
+        _ => 'longo fim',
+      }})',
+    );
   }
 
   @override
@@ -342,28 +388,69 @@ class AndroidTvController extends BaseRemoteController {
       log('texto via IME (${text.length} chars)');
       return;
     }
-    log('nenhum campo de texto em foco; enviando como teclas');
+    log('nenhum campo de texto em foco; enviando ${text.length} caractere(s) como teclas');
+    var skipped = 0;
     for (final rune in text.runes) {
       final ch = String.fromCharCode(rune);
       final code = androidTvKeyCodeForChar(ch);
-      if (code == null) continue;
+      if (code == null) {
+        skipped++;
+        continue;
+      }
       _socket!.add(RemoteMessages.keyInject(code, RemoteMessages.directionShort));
       await Future<void>.delayed(const Duration(milliseconds: 40));
     }
+    if (skipped > 0) log('$skipped caractere(s) sem tecla equivalente (acentos/símbolos) ignorados');
   }
 
+  /// Tecla a tecla, como o teclado numérico: `KEYCODE_A`…`Z`, dígitos e símbolos.
+  @override
+  Future<void> sendChar(String ch) async {
+    final code = androidTvKeyCodeForChar(ch);
+    if (code == null) throw ProtocolException('Sem tecla para "$ch"');
+    await ensureConnected();
+    _socket!.add(RemoteMessages.keyInject(code, RemoteMessages.directionShort));
+    log('key_inject "$ch" (code=$code)');
+  }
+
+  Completer<void>? _launchError;
+
+  /// Abre o app pelo primeiro link aceito pela TV. A cada `remote_error` a
+  /// TV também derruba a conexão, então cada tentativa reconecta antes.
   @override
   Future<void> launchApp(AppShortcut app) async {
-    final link = app.ids[device.protocol.name];
-    if (link == null) throw UnsupportedError('App sem deep link para Android TV');
-    await ensureConnected();
-    _socket!.add(RemoteMessages.appLink(link));
+    final spec = app.ids[device.protocol.name];
+    if (spec == null) throw UnsupportedError('App sem deep link para Android TV');
+    final candidates = spec.split(RegExp(r'\s+')).where((c) => c.isNotEmpty).toList();
+    for (final (i, link) in candidates.indexed) {
+      await ensureConnected();
+      final waiter = _launchError = Completer<void>();
+      _socket!.add(RemoteMessages.appLink(link));
+      log('launch ${app.id}: app_link $link (${i + 1}/${candidates.length})');
+      final rejected = await waiter.future
+          .then((_) => true)
+          .timeout(const Duration(milliseconds: 1500), onTimeout: () => false);
+      if (!rejected) {
+        log('launch ${app.id}: aceito');
+        return;
+      }
+      // A TV derruba a sessão logo após o remote_error: encerra já e
+      // reconecta antes do próximo candidato (ou para restabelecer o controle).
+      _teardown(DeviceConnectionState.disconnected);
+    }
+    // Restabelece a sessão derrubada pelo último erro e avisa a UI.
+    try {
+      await ensureConnected();
+    } on RemoteException catch (e) {
+      log('launch ${app.id}: reconexão após recusa falhou: ${e.message}');
+    }
+    throw ProtocolException('A TV recusou abrir ${app.label}');
   }
 
   @override
   void dispose() {
     _teardown(DeviceConnectionState.disconnected);
-    final f = _volumeFallback;
+    final f = _cast;
     if (f is BaseRemoteController) f.dispose();
     super.dispose();
   }

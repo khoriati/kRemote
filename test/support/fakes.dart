@@ -16,6 +16,17 @@ class MemoryPinStore implements CertificatePinStore {
   Future<void> delete(String deviceId) async => pins.remove(deviceId);
 }
 
+/// Pin store com latência, como o Keychain/Keystore reais.
+class SlowPinStore extends MemoryPinStore {
+  SlowPinStore({this.latency = const Duration(milliseconds: 80)});
+  final Duration latency;
+  @override
+  Future<void> write(String deviceId, String sha256Hex) async {
+    await Future<void>.delayed(latency);
+    await super.write(deviceId, sha256Hex);
+  }
+}
+
 class MemoryCredentialStore implements CredentialStore {
   final Map<String, Map<String, String>> data = {};
   @override

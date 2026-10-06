@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -7,7 +6,6 @@ import '../../app/app_scope.dart';
 import '../../application/device_service.dart';
 import '../../domain/entities/remote_device.dart';
 import '../../domain/errors.dart';
-import 'pairing_sheet.dart';
 
 /// Descoberta automática + cadastro manual + computadores Bluetooth.
 class AddDeviceScreen extends StatefulWidget {
@@ -18,9 +16,6 @@ class AddDeviceScreen extends StatefulWidget {
 }
 
 class _AddDeviceScreenState extends State<AddDeviceScreen> {
-  final _found = <String, DiscoveredDevice>{};
-  StreamSubscription<DiscoveredDevice>? _sub;
-  bool _scanning = false;
   List<({String name, String address})> _bonded = const [];
   String? _btError;
 
@@ -28,30 +23,11 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      _scan();
+      if (!mounted) return;
+      // Varredura contínua enquanto a tela estiver aberta (heartbeat da lista).
+      AppScope.of(context).scanner.watch();
       _loadBluetooth();
     });
-  }
-
-  Future<void> _scan() async {
-    final discovery = AppScope.of(context).discovery;
-    await _sub?.cancel();
-    if (!mounted) return;
-    setState(() {
-      _scanning = true;
-      _found.clear();
-    });
-    _sub = discovery
-        .discover(timeout: const Duration(seconds: 8))
-        .listen(
-          (d) => setState(() => _found[d.key] = d),
-          onDone: () {
-            if (mounted) setState(() => _scanning = false);
-          },
-          onError: (_) {
-            if (mounted) setState(() => _scanning = false);
-          },
-        );
   }
 
   Future<void> _loadBluetooth() async {
@@ -72,24 +48,21 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
 
   @override
   void dispose() {
-    _sub?.cancel();
+    AppScope.of(context).scanner.unwatch();
     super.dispose();
   }
 
+  /// Cadastra e volta ao controle, que abre o emparelhamento se necessário
+  /// (um único fluxo de emparelhamento por vez).
   Future<void> _add(RemoteDevice d) async {
     final svc = AppScope.of(context).devices;
-    final RemoteDevice added;
     try {
-      added = await svc.add(d);
+      await svc.add(d);
     } on RemoteException catch (e) {
       _snack(e.message);
       return;
     }
     if (!mounted) return;
-    if (added.protocol.requiresPairing && !svc.isPaired(added)) {
-      await PairingSheet.show(context, added);
-      if (!mounted) return;
-    }
     Navigator.of(context).pop();
   }
 
@@ -98,28 +71,34 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    final existing = AppScope.of(context).devices.devices.map((d) => d.id).toSet();
-    final atvHosts = _found.values.where((d) => d.protocol == RemoteProtocol.androidTv).map((d) => d.host).toSet();
+    final scope = AppScope.of(context);
+    return ListenableBuilder(
+      listenable: Listenable.merge([scope.scanner, scope.devices]),
+      builder: (context, _) => _buildBody(context, cs, scope),
+    );
+  }
+
+  Widget _buildBody(BuildContext context, ColorScheme cs, AppScope scope) {
+    final svc = scope.devices;
+    final scanner = scope.scanner;
+    final scanning = scanner.scanning;
+    final all = scanner.found;
+    final atvHosts = all.where((d) => d.protocol == RemoteProtocol.androidTv).map((d) => d.host).toSet();
     final castModelByHost = {
-      for (final d in _found.values)
+      for (final d in all)
         if (d.protocol == RemoteProtocol.cast && d.model != null) d.host: d.model!,
     };
-    final found =
-        _found.values
-            // Chromecast com Google TV anuncia os dois serviços; o Android TV é o completo.
-            .where((d) => !(d.protocol == RemoteProtocol.cast && atvHosts.contains(d.host)))
-            .toList()
-          ..sort((a, b) {
-            // Google TV / Android TV primeiro: é o caminho preferido.
-            final pa = a.protocol == RemoteProtocol.androidTv ? 0 : 1;
-            final pb = b.protocol == RemoteProtocol.androidTv ? 0 : 1;
-            return pa != pb ? pa.compareTo(pb) : a.name.compareTo(b.name);
-          });
+    // Chromecast com Google TV anuncia os dois serviços; o Android TV é o completo.
+    final found = all.where((d) => !(d.protocol == RemoteProtocol.cast && atvHosts.contains(d.host))).toList();
     return Scaffold(
       appBar: AppBar(
         title: const Text('Adicionar dispositivo'),
         actions: [
-          IconButton(tooltip: 'Buscar novamente', onPressed: _scanning ? null : _scan, icon: const Icon(Icons.refresh)),
+          IconButton(
+            tooltip: 'Buscar novamente',
+            onPressed: scanning ? null : () => scanner.scan(),
+            icon: const Icon(Icons.refresh),
+          ),
         ],
       ),
       body: ListView(
@@ -127,11 +106,11 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
         children: [
           _SectionHeader(
             title: 'Encontrados na rede',
-            trailing: _scanning
+            trailing: scanning
                 ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
                 : null,
           ),
-          if (found.isEmpty && !_scanning)
+          if (found.isEmpty && !scanning)
             Padding(
               padding: const EdgeInsets.symmetric(vertical: 16),
               child: Text(
@@ -152,12 +131,8 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
                 ),
                 title: Text(d.name),
                 subtitle: Text('${d.protocol.label} · ${d.host}${d.model != null ? ' · ${d.model}' : ''}'),
-                trailing: existing.contains(_withModel(d, castModelByHost).toDevice().id)
-                    ? const Icon(Icons.check)
-                    : const Icon(Icons.add),
-                onTap: existing.contains(_withModel(d, castModelByHost).toDevice().id)
-                    ? null
-                    : () => _add(_withModel(d, castModelByHost).toDevice()),
+                trailing: svc.findRegistered(d) != null ? const Icon(Icons.check) : const Icon(Icons.add),
+                onTap: svc.findRegistered(d) != null ? null : () => _add(_withModel(d, castModelByHost).toDevice()),
               ),
             ),
           const SizedBox(height: 16),

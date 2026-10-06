@@ -62,7 +62,7 @@ class ControllerFactory {
         d,
         ClientIdentity.fromCredentials(creds),
         _trust(d),
-        volumeFallback: d.volumeViaCast ? CastController(_castTwin(d), _trust(_castTwin(d))) : null,
+        cast: CastController(_castTwin(d), _trust(_castTwin(d))),
       ),
       RemoteProtocol.cast => CastController(d, _trust(d)),
       RemoteProtocol.samsungTizen => SamsungController(d, creds?['token'], _trust(d)),

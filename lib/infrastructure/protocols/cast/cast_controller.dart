@@ -82,6 +82,7 @@ class CastController extends BaseRemoteController {
   var _requestId = 1;
   Completer<void>? _ready;
 
+  final Map<int, Completer<Map<String, dynamic>>> _pending = {};
   double _volume = 0.5;
   bool _muted = false;
   String? _transportId;
@@ -190,6 +191,11 @@ class CastController extends BaseRemoteController {
       _send(m.source, CastMessageCodec.nsHeartbeat, {'type': 'PONG'});
       return;
     }
+    final reqId = p['requestId'];
+    if (reqId is int) {
+      final waiter = _pending.remove(reqId);
+      if (waiter != null && !waiter.isCompleted) waiter.complete(p);
+    }
     if (type == 'RECEIVER_STATUS') {
       final status = p['status'] as Map<String, dynamic>? ?? {};
       final vol = status['volume'] as Map<String, dynamic>?;
@@ -237,7 +243,53 @@ class CastController extends BaseRemoteController {
     }
   }
 
+  /// Envia uma mensagem ao receptor e aguarda a resposta com o mesmo `requestId`.
+  Future<Map<String, dynamic>> _request(
+    String ns,
+    Map<String, dynamic> payload, {
+    Duration timeout = const Duration(seconds: 5),
+  }) {
+    final id = _requestId++;
+    final c = Completer<Map<String, dynamic>>();
+    _pending[id] = c;
+    _send(_receiver, ns, {...payload, 'requestId': id});
+    return c.future.timeout(
+      timeout,
+      onTimeout: () {
+        _pending.remove(id);
+        throw const ConnectionException('Chromecast não respondeu');
+      },
+    );
+  }
+
+  /// Apps Cast realmente disponíveis no aparelho (`GET_APP_AVAILABILITY`).
+  /// Na Google TV a disponibilidade Cast reflete o app Android instalado.
+  @override
+  Future<Set<AppShortcut>?> installedApps(List<AppShortcut> apps) async {
+    final byId = {
+      for (final a in apps)
+        if (a.ids['cast'] != null) a.ids['cast']!: a,
+    };
+    if (byId.isEmpty) return {};
+    await ensureConnected();
+    final res = await _request(CastMessageCodec.nsReceiver, {
+      'type': 'GET_APP_AVAILABILITY',
+      'appId': byId.keys.toList(),
+    });
+    final avail = res['availability'] as Map<String, dynamic>? ?? {};
+    final out = {
+      for (final e in avail.entries)
+        if (e.value == 'APP_AVAILABLE' && byId[e.key] != null) byId[e.key]!,
+    };
+    log('apps disponíveis: ${out.map((a) => a.id).join(',')} de ${byId.length}');
+    return out;
+  }
+
   void _teardown(DeviceConnectionState next) {
+    for (final c in _pending.values) {
+      if (!c.isCompleted) c.completeError(const ConnectionException('Conexão encerrada'));
+    }
+    _pending.clear();
     _heartbeat?.cancel();
     _heartbeat = null;
     _socket?.destroy();

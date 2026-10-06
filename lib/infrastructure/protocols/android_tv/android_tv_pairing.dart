@@ -195,9 +195,21 @@ class AndroidTvPairingFlow implements PairingFlow {
       _emit(PairingStage.awaitingPin, 'Digite o código exibido na TV');
     } else if (msg.containsKey(41)) {
       _credentials = _identity!.toCredentials();
-      trust.commit().then((_) => _emit(PairingStage.success, 'Emparelhado com sucesso'));
+      // Marca o sucesso antes de fechar o socket: o `onDone` do fechamento
+      // chega antes de o pin ser persistido e não pode virar "falha".
+      _stage = PairingStage.success;
       _close();
+      unawaited(_finish());
     }
+  }
+
+  Future<void> _finish() async {
+    try {
+      await trust.commit();
+    } catch (e) {
+      KLog.d('atv-pairing', 'falha ao fixar certificado: $e');
+    }
+    _emit(PairingStage.success, 'Emparelhado com sucesso');
   }
 
   @override

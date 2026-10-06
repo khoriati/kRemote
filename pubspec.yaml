@@ -1,7 +1,7 @@
 name: kremote
 description: "Controle remoto universal para Google TV, Chromecast e TVs de várias marcas."
 publish_to: 'none'
-version: 0.1.5+6
+version: 0.2.0+11
 
 environment:
   sdk: ^3.12.2
@@ -18,6 +18,7 @@ dependencies:
   meta: ^1.18.0
   nsd: ^5.0.1
   pointycastle: ^4.0.0
+  share_plus: ^13.3.0
   shared_preferences: ^2.5.5
 
 dev_dependencies:
@@ -28,3 +29,5 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  assets:
+    - assets/apps/

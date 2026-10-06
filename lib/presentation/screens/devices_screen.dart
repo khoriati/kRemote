@@ -4,11 +4,32 @@ import '../../app/app_scope.dart';
 import '../../application/device_service.dart';
 import '../../domain/entities/remote_device.dart';
 import 'add_device_screen.dart';
+import 'available_devices_sheet.dart';
 import 'pairing_sheet.dart';
 
-/// Gestão dos dispositivos cadastrados.
-class DevicesScreen extends StatelessWidget {
+/// Gestão dos dispositivos cadastrados, com presença na rede verificada
+/// periodicamente enquanto a tela está aberta.
+class DevicesScreen extends StatefulWidget {
   const DevicesScreen({super.key});
+
+  @override
+  State<DevicesScreen> createState() => _DevicesScreenState();
+}
+
+class _DevicesScreenState extends State<DevicesScreen> {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) AppScope.of(context).devices.watchPresence();
+    });
+  }
+
+  @override
+  void dispose() {
+    AppScope.of(context).devices.unwatchPresence();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -39,12 +60,24 @@ class DevicesScreen extends StatelessWidget {
             itemBuilder: (context, i) {
               final d = list[i];
               final isActive = svc.active?.id == d.id;
+              final online = d.protocol.isNetwork ? svc.isOnline(d) : null;
+              final presence = switch (online) {
+                true => ' · na rede',
+                false => ' · fora da rede',
+                null => '',
+              };
               return Card(
                 child: ListTile(
-                  leading: Icon(Icons.tv, color: isActive ? Theme.of(context).colorScheme.primary : null),
+                  leading: Stack(
+                    clipBehavior: Clip.none,
+                    children: [
+                      Icon(Icons.tv, color: isActive ? Theme.of(context).colorScheme.primary : null),
+                      if (d.protocol.isNetwork) Positioned(right: -8, bottom: -6, child: PresenceDot(online: online)),
+                    ],
+                  ),
                   title: Text(d.name),
                   subtitle: Text(
-                    '${d.protocol.label}\n${d.protocol.isNetwork ? '${d.host}:${d.port}' : d.host}${svc.isPaired(d) ? '' : ' · não emparelhado'}',
+                    '${d.protocol.label}\n${d.protocol.isNetwork ? '${d.host}:${d.port}' : d.host}${svc.isPaired(d) ? '' : ' · não emparelhado'}$presence',
                   ),
                   isThreeLine: true,
                   onTap: () {

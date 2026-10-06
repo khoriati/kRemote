@@ -57,6 +57,7 @@ class RemoteDevice {
     this.macAddress,
     this.pairingPort,
     this.volumeViaCast = false,
+    this.serviceName,
   });
 
   final String id;
@@ -78,6 +79,11 @@ class RemoteDevice {
   /// app Google Home.
   final bool volumeViaCast;
 
+  /// Nome da instância mDNS/SSDP com que o aparelho foi descoberto. É a
+  /// identidade estável usada para reencontrá-lo quando o IP muda (roteador
+  /// reiniciado, troca de Wi-Fi). `null` para cadastro manual por IP.
+  final String? serviceName;
+
   RemoteDevice copyWith({
     String? name,
     String? host,
@@ -87,6 +93,7 @@ class RemoteDevice {
     bool clearMac = false,
     int? pairingPort,
     bool? volumeViaCast,
+    String? serviceName,
   }) => RemoteDevice(
     id: id,
     name: name ?? this.name,
@@ -97,6 +104,7 @@ class RemoteDevice {
     macAddress: clearMac ? null : (macAddress ?? this.macAddress),
     pairingPort: pairingPort ?? this.pairingPort,
     volumeViaCast: volumeViaCast ?? this.volumeViaCast,
+    serviceName: serviceName ?? this.serviceName,
   );
 
   Map<String, dynamic> toJson() => {
@@ -109,6 +117,7 @@ class RemoteDevice {
     'macAddress': macAddress,
     'pairingPort': pairingPort,
     'volumeViaCast': volumeViaCast,
+    'serviceName': serviceName,
   };
 
   factory RemoteDevice.fromJson(Map<String, dynamic> json) => RemoteDevice(
@@ -121,6 +130,7 @@ class RemoteDevice {
     macAddress: json['macAddress'] as String?,
     pairingPort: json['pairingPort'] as int?,
     volumeViaCast: json['volumeViaCast'] as bool? ?? false,
+    serviceName: json['serviceName'] as String?,
   );
 
   @override
@@ -169,5 +179,6 @@ class DiscoveredDevice {
     // Chromecast com Google TV manda volume à TV por CEC a partir da tecla;
     // TVs com Google TV embutida costumam recusar a tecla e aceitar o Cast.
     volumeViaCast: protocol == RemoteProtocol.androidTv && !(model ?? '').toLowerCase().startsWith('chromecast'),
+    serviceName: serviceName,
   );
 }
