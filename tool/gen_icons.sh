@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Gera os ícones do app (iOS + Android, incl. adaptativo) a partir de
-# assets/icon/app_icon.svg e os tiles dos atalhos de apps em assets/apps.
+# assets/icon/app_icon.svg.
 #   tool/gen_icons.sh
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -50,12 +50,5 @@ cat > "$RES/values/ic_launcher_background.xml" <<'XML'
 </resources>
 XML
 
-# ---- Tiles dos atalhos de apps ----
-if [[ -d assets/apps/src ]]; then
-  for svg in assets/apps/src/*.svg; do
-    name="$(basename "${svg%.svg}")"
-    rsvg-convert -w 256 -h 256 "$svg" -o "assets/apps/$name.png"
-  done
-fi
 rm -rf "$TMP"
 echo "ícones gerados"

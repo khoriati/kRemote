@@ -237,7 +237,7 @@ void main() {
       final result = flow.state.firstWhere((s) => s.stage == PairingStage.failure);
       await flow.start();
       final s = await result.timeout(const Duration(seconds: 10));
-      expect(s.message, contains('certificado do dispositivo mudou'));
+      expect(s.message, contains('não é o cadastrado'));
     });
   });
 
@@ -321,6 +321,30 @@ void main() {
       addTearDown(c.dispose);
       await expectLater(c.connect(), throwsA(isA<PairingException>()));
       expect(c.currentState, DeviceConnectionState.needsPairing);
+    });
+
+    test('TV que fecha o socket na primeira conexão não dispara emparelhamento: reconecta', () async {
+      final server = FakeRemoteServer(tv, trustedClientPem: client.certificatePem)..dropFirstConnections = 1;
+      await server.start();
+      addTearDown(server.close);
+      final dev = device(port: server.port);
+      final c = AndroidTvController(dev, client, TlsTrust(deviceId: dev.id, store: MemoryPinStore()));
+      addTearDown(c.dispose);
+      await c.connect();
+      expect(c.currentState, DeviceConnectionState.connected);
+      expect(server.connections, 2);
+    });
+
+    test('outro aparelho no IP cadastrado (pin divergente) é DeviceMismatch, não emparelhamento', () async {
+      final server = FakeRemoteServer(tv, trustedClientPem: client.certificatePem);
+      await server.start();
+      addTearDown(server.close);
+      final dev = device(port: server.port);
+      final pins = MemoryPinStore()..pins[dev.id] = 'a' * 64;
+      final c = AndroidTvController(dev, client, TlsTrust(deviceId: dev.id, store: pins));
+      addTearDown(c.dispose);
+      await expectLater(c.connect(), throwsA(isA<DeviceMismatchException>()));
+      expect(c.currentState, DeviceConnectionState.error);
     });
 
     test('volume é delegado ao Cast quando volumeViaCast está ativo, com fallback para tecla', () async {

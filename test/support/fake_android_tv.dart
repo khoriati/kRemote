@@ -125,6 +125,11 @@ class FakeRemoteServer {
   final imeEdits = <(int, int, String)>[];
   SecureSocket? _client;
 
+  /// Quantas conexões iniciais a "TV" fecha logo após o handshake, sem
+  /// mensagem (como faz ao acordar ou com a sessão anterior ainda viva).
+  int dropFirstConnections = 0;
+  int connections = 0;
+
   /// Simula a TV anunciando um campo de texto em foco.
   void focusTextField({int imeCounter = 7, int fieldCounter = 3, String value = ''}) {
     final appInfo = ProtoWriter()
@@ -165,6 +170,10 @@ class FakeRemoteServer {
       ProtoWriter.frameVarint((ProtoWriter()..message(field, inner)).toBytes());
 
   void _serve(SecureSocket socket) {
+    if (connections++ < dropFirstConnections) {
+      socket.destroy();
+      return;
+    }
     _client = socket;
     final buf = <int>[];
     final info = ProtoWriter()

@@ -60,8 +60,8 @@ void main() {
     });
 
     test('mensagens de falha distinguem pin divergente de emparelhamento', () {
-      expect(TlsTrust.describeHandshakeFailure(hadPin: true), isA<ConnectionException>());
-      expect(TlsTrust.describeHandshakeFailure(hadPin: false), isA<PairingException>());
+      expect(TlsTrust.describeHandshakeFailure(pinMismatch: true), isA<DeviceMismatchException>());
+      expect(TlsTrust.describeHandshakeFailure(pinMismatch: false), isA<PairingException>());
     });
   });
 }

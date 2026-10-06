@@ -158,7 +158,7 @@ class AndroidTvPairingFlow implements PairingFlow {
     } on PairingException catch (e) {
       _fail(e.message);
     } on HandshakeException {
-      _fail(TlsTrust.describeHandshakeFailure(hadPin: trust.hasPin).message);
+      _fail(TlsTrust.describeHandshakeFailure(pinMismatch: trust.pinMismatch).message);
     } catch (e) {
       _fail('Falha ao conectar em ${device.host}:${device.pairingPort ?? 6467} ($e)');
     }

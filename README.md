@@ -47,32 +47,36 @@ TVs Philips **com Google TV** devem ser adicionadas como *Google TV / Android TV
   emparelhamento quando está em primeiro plano) e o sucesso é registrado
   antes de a TV fechar o socket — o fechamento não é mais tratado como falha.
 
-## Apps
+## Identidade do aparelho e troca de rede
 
-O painel *Apps* mostra tiles com ícone. Na Google TV / Android TV o protocolo de
-controle não lista os apps instalados; a verificação usa o canal Cast do mesmo
-aparelho (`GET_APP_AVAILABILITY`), que na Google TV reflete o app Android
-instalado. Atalhos sem id Cast (Max, Apple TV, Paramount+, Crunchyroll,
-Globoplay) não são verificáveis e ficam sempre visíveis; "Mostrar todos"
-revela os ocultos. Na Google TV cada atalho pode ter mais de um alvo
-(URL ou nome de pacote, separados por espaço): se a TV responde `remote_error`
-ao primeiro, o próximo é tentado — o Globoplay abre pelo pacote
-`com.globo.globotv`, pois não trata o link do site. Os tiles ficam em `assets/apps` e são gerados por
-`tool/gen_icons.sh` a partir de `assets/apps/src/*.svg` (glifos CC0 do Simple
-Icons quando existem; monograma nas cores da marca para os demais).
+Para Google TV / Android TV a identidade decisiva é a **impressão digital do
+certificado TLS da TV** (fixada no primeiro uso, `pin:<id>`): ela não muda com
+IP, rede, nome amigável nem nome da instância mDNS. Regras:
 
-## Teclado e voz
+- **Outro aparelho respondendo no IP gravado** (rede nova com a mesma faixa)
+  gera `DeviceMismatchException`: o app não pede emparelhamento, procura a TV
+  na rede e, se a achar, atualiza o endereço.
+- **Relocalização** (`DeviceService._resolveMatch`): entre os achados, vence o
+  host cujo certificado confere com o pin — TV homônima em outra casa nunca é
+  confundida e a TV renomeada continua sendo encontrada. Sem pin ou sem
+  conseguir ler certificados, vale a heurística por `serviceName`/nome.
+- **Cadastro repetido**: adicionar um aparelho que já existe (mesma identidade,
+  IP novo) atualiza o cadastro em vez de duplicar — credenciais preservadas.
+- **Socket fechado durante a conexão** não vira pedido de emparelhamento na
+  primeira vez: a TV também fecha a sessão ao acordar ou com a sessão antiga
+  viva, então o controlador tenta de novo (`connectAttempts`) antes de
+  concluir que o cliente não é reconhecido. Falhas TLS no meio de uma sessão
+  já estabelecida são queda de rede, não recusa.
+- **Armazenamento seguro** sem `resetOnError` (Android) e com nova tentativa
+  na leitura: um erro transitório do Keystore não apaga nem "desemparelha".
 
-O painel *Teclado* tem modos **ABC** e **123** com envio tecla a tecla
-(`KEYCODE_A`…`Z`, dígitos e símbolos), o mesmo caminho do painel Números, que
-funciona em qualquer campo da TV. Abaixo há um campo para enviar uma frase
-inteira: se a TV anunciou um campo de texto em foco, usa o canal IME; senão,
-cai em teclas (acentos não têm tecla e são ignorados).
+## Teclado
 
-O botão de microfone envia `KEYCODE_ASSIST`, que só ativa o Assistente na TV.
-O áudio do celular **não** é transmitido: o protocolo Android TV Remote v2 tem
-mensagens de voz, mas o formato do áudio não é documentado e nenhum cliente
-aberto o implementa.
+O painel *Números* tem os modos **123** e **ABC**: letras, espaço, apagar e
+Enter são enviados como teclas (`KEYCODE_A`…`Z`, `KEYCODE_SPACE`) pelo mesmo
+caminho dos dígitos, que funciona em qualquer campo da TV. O botão de
+microfone envia `KEYCODE_ASSIST`, que só ativa o Assistente na TV; o áudio do
+celular **não** é transmitido.
 
 ## Ícone do app
 
@@ -170,7 +174,7 @@ equipe de assinatura), depois `scripts/build-ios.sh run`.
 | `scripts/deploy-ios.sh [id]` | deploy release (sem debug) no iPhone por USB/Wi-Fi; instala por cima via `devicectl`, preservando cadastros e emparelhamentos |
 | `scripts/deploy-android.sh [id]` | deploy release (sem debug) no Android por USB; `adb install -r`, preservando cadastros e emparelhamentos |
 | `scripts/dev.sh run\|devices\|probe\|clean` | atalhos de desenvolvimento |
-| `tool/gen_icons.sh` | regenera ícone do app (iOS/Android) e tiles dos apps |
+| `tool/gen_icons.sh` | regenera ícone do app (iOS/Android) |
 
 Artefatos vão para `build/dist/{android,ios}`, nomeados pela versão do `pubspec`.
 

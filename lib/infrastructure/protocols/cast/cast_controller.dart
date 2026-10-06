@@ -151,7 +151,7 @@ class CastController extends BaseRemoteController {
       );
     } on HandshakeException {
       _teardown(DeviceConnectionState.error);
-      throw _fail(TlsTrust.describeHandshakeFailure(hadPin: trust.hasPin));
+      throw _fail(TlsTrust.describeHandshakeFailure(pinMismatch: trust.pinMismatch));
     } catch (e) {
       _teardown(DeviceConnectionState.error);
       throw _fail(e is RemoteException ? e : ConnectionException(e.toString()));

@@ -36,6 +36,10 @@ bool isValidMac(String mac) => RegExp(r'^([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$'
 /// Verifica se `host:port` aceita conexão TCP (injetado pela infraestrutura).
 typedef PortProbe = Future<bool> Function(String host, int port);
 
+/// Impressão digital (SHA-256) do certificado TLS que `host:port` apresenta,
+/// ou `null` se não foi possível ler (injetado pela infraestrutura).
+typedef FingerprintProbe = Future<String?> Function(String host, int port);
+
 /// Caso de uso central: cadastro de dispositivos, dispositivo ativo,
 /// ciclo de vida dos controladores e emparelhamento.
 class DeviceService extends ChangeNotifier {
@@ -45,8 +49,10 @@ class DeviceService extends ChangeNotifier {
     required CertificatePinStore pins,
     required ControllerFactory factory,
     PortProbe? probe,
+    FingerprintProbe? fingerprintProbe,
     NetworkScanner? scanner,
   }) : _probe = probe, // ignore: prefer_initializing_formals
+       _fingerprint = fingerprintProbe,
        _scanner = scanner, // ignore: prefer_initializing_formals
        _repo = repository,
        _creds = credentials,
@@ -60,6 +66,7 @@ class DeviceService extends ChangeNotifier {
   final CertificatePinStore _pins;
   final ControllerFactory _factory;
   final PortProbe? _probe;
+  final FingerprintProbe? _fingerprint;
   final NetworkScanner? _scanner;
 
   final List<RemoteDevice> _devices = [];
@@ -85,7 +92,7 @@ class DeviceService extends ChangeNotifier {
       ..clear()
       ..addAll(await _repo.loadAll());
     for (final d in _devices) {
-      _paired[d.id] = _factory.hasPairedCredentials(await _creds.read(d.id), d.protocol);
+      _paired[d.id] = _factory.hasPairedCredentials(await _readCredentials(d.id), d.protocol);
     }
     _loaded = true;
     notifyListeners();
@@ -100,6 +107,21 @@ class DeviceService extends ChangeNotifier {
   }
 
   bool isPaired(RemoteDevice d) => !d.protocol.requiresPairing || (_paired[d.id] ?? false);
+
+  /// Leitura de credenciais tolerante a falha transitória do Keychain/Keystore
+  /// (ex.: logo após reinício): uma falha de leitura não pode ser confundida
+  /// com "nunca emparelhado", o que dispararia um emparelhamento indevido.
+  Future<Map<String, String>?> _readCredentials(String id) async {
+    for (var attempt = 1; ; attempt++) {
+      try {
+        return await _creds.read(id);
+      } catch (e) {
+        KLog.d('devices', 'falha ao ler credenciais de $id (tentativa $attempt): $e');
+        if (attempt >= 3) rethrow;
+        await Future<void>.delayed(Duration(milliseconds: 150 * attempt));
+      }
+    }
+  }
 
   /// Migração: receptores Cast já cadastrados que também são Google TV
   /// passam a ser controlados pelo protocolo completo.
@@ -148,13 +170,34 @@ class DeviceService extends ChangeNotifier {
         model: d.model,
       ).toDevice();
     }
+    // O mesmo aparelho já cadastrado com outro IP (rede trocada): atualiza o
+    // endereço no lugar e preserva id, credenciais e pin — nada de emparelhar
+    // de novo nem duplicar o cadastro.
+    final existing = _devices.where((e) => e.id != d.id && e.protocol == d.protocol && _sameIdentity(e, d)).firstOrNull;
+    if (existing != null) {
+      KLog.d('devices', '${d.name}: já cadastrado como ${existing.name} (${existing.host}); atualizando endereço');
+      final moved = existing.copyWith(host: d.host, port: d.port, serviceName: d.serviceName);
+      final i = _devices.indexOf(existing);
+      _devices[i] = moved;
+      await _disposeController(existing.id);
+      _online[existing.id] = true;
+      _activeId = existing.id;
+      await _repo.saveAll(_devices);
+      notifyListeners();
+      return moved;
+    }
     _devices.removeWhere((e) => e.id == d.id);
     _devices.add(d);
-    _paired[d.id] = _factory.hasPairedCredentials(await _creds.read(d.id), d.protocol);
+    _paired[d.id] = _factory.hasPairedCredentials(await _readCredentials(d.id), d.protocol);
     _activeId = d.id;
     await _repo.saveAll(_devices);
     notifyListeners();
     return d;
+  }
+
+  static bool _sameIdentity(RemoteDevice a, RemoteDevice b) {
+    if (a.serviceName != null && b.serviceName != null) return a.serviceName == b.serviceName;
+    return a.name.trim().toLowerCase() == b.name.trim().toLowerCase();
   }
 
   Future<void> update(RemoteDevice d) async {
@@ -264,7 +307,7 @@ class DeviceService extends ChangeNotifier {
   Future<void> _sweep(List<RemoteDevice> offline) async {
     final found = await _scanner!.scan();
     for (final d in offline) {
-      final match = _bestMatch(d, found);
+      final match = await _resolveMatch(d, found);
       if (match == null || match.host == d.host) continue;
       await _moveTo(d, match);
     }
@@ -278,7 +321,7 @@ class DeviceService extends ChangeNotifier {
     if (scanner == null || !d.protocol.isNetwork) return null;
     KLog.d('devices', '${d.name}: procurando na rede (atual ${d.host})');
     final found = await scanner.scan(timeout: timeout);
-    final match = _bestMatch(d, found);
+    final match = await _resolveMatch(d, found);
     if (match == null) {
       KLog.d('devices', '${d.name}: não encontrado na rede');
       return null;
@@ -329,6 +372,57 @@ class DeviceService extends ChangeNotifier {
       return (a.host == d.host ? 0 : 1).compareTo(b.host == d.host ? 0 : 1);
     });
     return candidates.first;
+  }
+
+  /// Hosts por aparelho examinados por certificado numa relocalização.
+  static const maxFingerprintChecks = 6;
+
+  /// Escolhe, entre os achados, o que é de fato o aparelho [d].
+  ///
+  /// Quando o aparelho tem certificado TLS fixado (já conectou alguma vez), a
+  /// identidade decisiva é a impressão digital desse certificado: ela não
+  /// muda com IP, rede, nome amigável ou nome da instância mDNS. Assim uma
+  /// TV homônima em outra casa, ou outra TV ocupando o IP antigo, nunca é
+  /// confundida com a cadastrada — e a TV renomeada continua sendo achada.
+  /// Sem pin (ou sem como ler certificados), vale a heurística por nome.
+  Future<DiscoveredDevice?> _resolveMatch(RemoteDevice d, List<DiscoveredDevice> found) async {
+    final heuristic = _bestMatch(d, found);
+    final probe = _fingerprint;
+    if (probe == null || !d.protocol.requiresPairing) return heuristic;
+    final pin = await _pins.read(d.id);
+    if (pin == null) return heuristic;
+
+    // Hosts candidatos: primeiro quem casa por nome, depois os demais do
+    // mesmo protocolo (TV renomeada), sem repetir host.
+    final hosts = <String>[];
+    for (final f in [...found.where((f) => matches(d, f)), ...found.where((f) => f.protocol == d.protocol)]) {
+      if (!hosts.contains(f.host)) hosts.add(f.host);
+    }
+    if (hosts.isEmpty) return null;
+    final checks = hosts.take(maxFingerprintChecks).toList();
+    final prints = await Future.wait(checks.map((h) => probe(h, d.port)));
+    var inconclusive = 0;
+    for (var i = 0; i < checks.length; i++) {
+      final fp = prints[i];
+      if (fp == null) {
+        inconclusive++;
+        continue;
+      }
+      if (fp == pin) {
+        final host = checks[i];
+        KLog.d('devices', '${d.name}: certificado confere em $host');
+        return found.where((f) => f.host == host && f.protocol == d.protocol).firstOrNull ??
+            found.where((f) => f.host == host).first;
+      }
+    }
+    if (inconclusive == 0 || heuristic == null) {
+      KLog.d('devices', '${d.name}: nenhum dos ${checks.length} host(s) tem o certificado fixado');
+      return null;
+    }
+    // Não deu para ler certificados (porta fechada/aparelho dormindo): a
+    // heurística só vale se o host dela não foi descartado por certificado.
+    final idx = checks.indexOf(heuristic.host);
+    return idx >= 0 && prints[idx] != null ? null : heuristic;
   }
 
   /// Controlador do dispositivo (criado sob demanda e mantido vivo para

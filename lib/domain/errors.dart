@@ -15,6 +15,13 @@ class PairingException extends RemoteException {
   const PairingException(super.message);
 }
 
+/// O aparelho que responde no endereço gravado não é o cadastrado (o
+/// certificado TLS difere do fixado): tipicamente outra TV ocupando o mesmo
+/// IP depois de uma troca de rede. Não é motivo para reemparelhar.
+class DeviceMismatchException extends RemoteException {
+  const DeviceMismatchException(super.message);
+}
+
 class UnsupportedKeyException extends RemoteException {
   UnsupportedKeyException(Object key) : super('Tecla não suportada: $key');
 }

@@ -128,18 +128,39 @@ class AndroidTvController extends BaseRemoteController {
     return false;
   }
 
+  /// Tentativas de handshake antes de concluir que a TV não reconhece o
+  /// cliente. A TV também fecha o socket durante a conexão por motivos
+  /// transitórios (acordando, Wi-Fi recém-trocado, sessão anterior ainda
+  /// viva); um único fechamento não pode virar pedido de emparelhamento.
+  static const connectAttempts = 2;
+  static const _retryDelay = Duration(milliseconds: 600);
+
   @override
   Future<void> connect() async {
     if (currentState == DeviceConnectionState.connected) return;
     if (_ready != null && !_ready!.isCompleted) return _ready!.future;
-    _ready = Completer<void>();
     final id = identity;
     if (id == null) {
+      _ready = Completer<void>();
       setState(DeviceConnectionState.needsPairing);
       const err = PairingException('Dispositivo precisa ser emparelhado');
       _completeReadyError(err);
       throw err;
     }
+    for (var attempt = 1; ; attempt++) {
+      try {
+        await _attemptConnect(id);
+        return;
+      } on PairingException {
+        if (attempt >= connectAttempts || _disposed) rethrow;
+        log('TV recusou a sessão (tentativa $attempt/$connectAttempts); repetindo antes de pedir emparelhamento');
+        await Future<void>.delayed(_retryDelay);
+      }
+    }
+  }
+
+  Future<void> _attemptConnect(ClientIdentity id) async {
+    _ready = Completer<void>();
     setState(DeviceConnectionState.connecting);
     try {
       await trust.load();
@@ -177,9 +198,9 @@ class AndroidTvController extends BaseRemoteController {
         },
       );
     } on HandshakeException {
-      // TLS recusado: ou a TV não reconhece nosso certificado (reemparelhar)
-      // ou o certificado da TV mudou (pin divergente).
-      final err = TlsTrust.describeHandshakeFailure(hadPin: trust.hasPin);
+      // TLS recusado: ou quem responde não é a TV cadastrada (pin divergente)
+      // ou a TV não reconhece o nosso certificado (reemparelhar).
+      final err = TlsTrust.describeHandshakeFailure(pinMismatch: trust.pinMismatch);
       _teardown(err is PairingException ? DeviceConnectionState.needsPairing : DeviceConnectionState.error);
       _completeReadyError(err);
       throw err;
@@ -272,10 +293,12 @@ class AndroidTvController extends BaseRemoteController {
 
   void _onError(Object e) {
     log('erro de socket: $e');
-    final isTls = e is HandshakeException || e is TlsException;
-    _teardown(isTls ? DeviceConnectionState.needsPairing : DeviceConnectionState.error);
+    // Só a recusa do handshake indica cliente não reconhecido; outras falhas
+    // TLS no meio da sessão (rede trocada, socket morto) são queda comum.
+    final rejected = e is HandshakeException && currentState == DeviceConnectionState.connecting;
+    _teardown(rejected ? DeviceConnectionState.needsPairing : DeviceConnectionState.error);
     _completeReadyError(
-      isTls
+      rejected
           ? const PairingException('Dispositivo precisa ser emparelhado novamente')
           : ConnectionException(e.toString()),
     );
@@ -447,8 +470,11 @@ class AndroidTvController extends BaseRemoteController {
     throw ProtocolException('A TV recusou abrir ${app.label}');
   }
 
+  bool _disposed = false;
+
   @override
   void dispose() {
+    _disposed = true;
     _teardown(DeviceConnectionState.disconnected);
     final f = _cast;
     if (f is BaseRemoteController) f.dispose();

@@ -1,11 +1,8 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 
 import '../../app/app_scope.dart';
-import '../../app/theme.dart';
-import '../../domain/entities/app_shortcut.dart';
 import '../../domain/entities/connection_state.dart';
 import '../../domain/entities/remote_device.dart';
 import '../../domain/entities/remote_key.dart';
@@ -138,6 +135,10 @@ class _RemoteScreenState extends State<RemoteScreen> with WidgetsBindingObserver
         } on PairingException {
           if (mounted && _isCurrent) unawaited(_pair(d));
           return;
+        } on DeviceMismatchException {
+          // Outro aparelho ocupa o IP antigo: a TV cadastrada está em outro
+          // endereço (ou fora da rede). Nunca é caso de reemparelhar.
+          KLog.d('ui', '${d.name}: outro aparelho responde em ${d.host}; procurando a TV pelo certificado');
         } on RemoteException catch (e) {
           if (!mounted) return;
           _toast(e);
@@ -160,6 +161,11 @@ class _RemoteScreenState extends State<RemoteScreen> with WidgetsBindingObserver
           return;
         } on PairingException {
           if (mounted && _isCurrent) unawaited(_pair(d));
+          return;
+        } on DeviceMismatchException {
+          if (mounted) {
+            _toast(ConnectionException('${d.name} não foi encontrado; outro aparelho responde em ${d.host}.'));
+          }
           return;
         } on RemoteException catch (e) {
           if (mounted) _toast(e);
@@ -212,6 +218,8 @@ class _RemoteScreenState extends State<RemoteScreen> with WidgetsBindingObserver
       await svc.sendKey(d, k, press: press);
     } on PairingException {
       if (mounted) unawaited(_pair(d));
+    } on DeviceMismatchException {
+      if (mounted && !_recovering) unawaited(_reconnect());
     } on ConnectionException catch (e) {
       if (!mounted) return;
       // Pode ser mudança de IP: tenta reencontrar o aparelho antes de avisar.
@@ -327,8 +335,6 @@ class _RemoteScreenState extends State<RemoteScreen> with WidgetsBindingObserver
       'Controle': Icons.gamepad_outlined,
       'Mídia': Icons.play_circle_outline,
       'Números': Icons.dialpad,
-      if (!isHid) 'Apps': Icons.apps,
-      'Teclado': Icons.keyboard_alt_outlined,
     };
     final panelIndex = _panel.clamp(0, panels.length - 1);
     return SafeArea(
@@ -342,9 +348,7 @@ class _RemoteScreenState extends State<RemoteScreen> with WidgetsBindingObserver
                 child: switch (panels.keys.elementAt(panelIndex)) {
                   'Controle' => _MainPanel(remote: this, haptics: haptics, isHid: isHid),
                   'Mídia' => _MediaPanel(remote: this, haptics: haptics),
-                  'Números' => _NumbersPanel(remote: this, haptics: haptics),
-                  'Apps' => _AppsPanel(remote: this, device: d),
-                  _ => _KeyboardPanel(remote: this, device: d),
+                  _ => _NumbersPanel(remote: this, haptics: haptics),
                 },
               ),
             ),
@@ -635,469 +639,133 @@ class _MediaPanel extends StatelessWidget {
   }
 }
 
-class _NumbersPanel extends StatelessWidget {
+class _NumbersPanel extends StatefulWidget {
   const _NumbersPanel({required this.remote, required this.haptics});
   final _RemoteScreenState remote;
   final bool haptics;
 
   @override
+  State<_NumbersPanel> createState() => _NumbersPanelState();
+}
+
+/// Teclado numérico e, no modo ABC, as letras — tudo pelo mesmo caminho de
+/// tecla (`sendKey`), que funciona em qualquer campo da TV.
+class _NumbersPanelState extends State<_NumbersPanel> {
+  static const _alphaRows = ['qwertyuiop', 'asdfghjkl', 'zxcvbnm'];
+  bool _alpha = false;
+
+  @override
   Widget build(BuildContext context) {
-    Widget n(RemoteKey k, String label, {IconData? icon}) => RemoteButton(
+    final remote = widget.remote;
+    final haptics = widget.haptics;
+    Widget n(RemoteKey k, String label, {IconData? icon, double size = 72}) => RemoteButton(
       label: icon == null ? label : null,
       icon: icon,
       semanticLabel: label,
-      size: 72,
+      size: size,
       haptics: haptics,
       enabled: remote._supports(k),
       onTap: () => remote._key(k),
     );
-    return Center(
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            for (final row in [
-              [1, 2, 3],
-              [4, 5, 6],
-              [7, 8, 9],
-            ])
-              Padding(
-                padding: const EdgeInsets.only(bottom: 18),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  children: [for (final d in row) n(RemoteKey.fromDigit(d), '$d')],
-                ),
-              ),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-              children: [
-                n(RemoteKey.dash, 'Traço', icon: Icons.remove),
-                n(RemoteKey.num0, '0'),
-                n(RemoteKey.backspace, 'Apagar', icon: Icons.backspace_outlined),
-              ],
-            ),
-            const SizedBox(height: 18),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-              children: [
-                RemotePill(
-                  topIcon: Icons.keyboard_arrow_up,
-                  bottomIcon: Icons.keyboard_arrow_down,
-                  label: 'CH',
-                  height: 120,
-                  enabled: remote._supports(RemoteKey.channelUp),
-                  onTop: () => remote._key(RemoteKey.channelUp),
-                  onBottom: () => remote._key(RemoteKey.channelDown),
-                ),
-                n(RemoteKey.enter, 'Enter', icon: Icons.keyboard_return),
-                n(RemoteKey.guide, 'Guia', icon: Icons.list_alt),
-              ],
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _AppsPanel extends StatefulWidget {
-  const _AppsPanel({required this.remote, required this.device});
-  final _RemoteScreenState remote;
-  final RemoteDevice device;
-
-  @override
-  State<_AppsPanel> createState() => _AppsPanelState();
-}
-
-class _AppsPanelState extends State<_AppsPanel> {
-  /// Apps confirmados como instalados; `null` = não verificável ou ainda não consultado.
-  Set<AppShortcut>? _installed;
-  bool _checking = false;
-  bool _showAll = false;
-
-  @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _check());
-  }
-
-  List<AppShortcut> get _supported {
-    final c = widget.remote._controller;
-    return AppShortcut.all.where((a) => c?.supportsApp(a) ?? false).toList();
-  }
-
-  Future<void> _check() async {
-    final c = widget.remote._controller;
-    if (c == null || _checking) return;
-    setState(() => _checking = true);
-    try {
-      final r = await c.installedApps(_supported);
-      if (mounted) setState(() => _installed = r);
-    } catch (e) {
-      KLog.d('ui', 'verificação de apps: $e');
-    } finally {
-      if (mounted) setState(() => _checking = false);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    final supported = _supported;
-    if (supported.isEmpty) {
-      return Center(
-        child: Text(
-          'Este dispositivo não permite abrir apps pelo controle.',
-          style: TextStyle(color: cs.onSurfaceVariant),
-        ),
-      );
-    }
-    final installed = _installed;
-    final apps = installed == null || _showAll ? supported : supported.where(installed.contains).toList();
-    final hidden = installed == null ? 0 : supported.length - supported.where(installed.contains).length;
-    return Column(
-      children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(24, 12, 16, 0),
-          child: Row(
-            children: [
-              Expanded(
-                child: Text(
-                  _checking
-                      ? 'Verificando apps instalados…'
-                      : installed == null
-                      ? 'Atalhos disponíveis para este aparelho'
-                      : hidden == 0
-                      ? 'Apps instalados no aparelho'
-                      : _showAll
-                      ? 'Mostrando todos ($hidden não instalados)'
-                      : 'Apps instalados ($hidden ocultos)',
-                  style: TextStyle(color: cs.onSurfaceVariant, fontSize: 13),
-                ),
-              ),
-              if (hidden > 0)
-                TextButton(
-                  onPressed: () => setState(() => _showAll = !_showAll),
-                  child: Text(_showAll ? 'Só instalados' : 'Mostrar todos'),
-                ),
-              IconButton(
-                tooltip: 'Verificar novamente',
-                onPressed: _checking ? null : _check,
-                icon: const Icon(Icons.refresh, size: 20),
-              ),
-            ],
-          ),
-        ),
-        Expanded(
-          child: apps.isEmpty
-              ? Center(
-                  child: Text('Nenhum dos atalhos está instalado.', style: TextStyle(color: cs.onSurfaceVariant)),
-                )
-              : GridView.count(
-                  padding: const EdgeInsets.all(24),
-                  crossAxisCount: 3,
-                  mainAxisSpacing: 16,
-                  crossAxisSpacing: 16,
-                  childAspectRatio: 0.82,
-                  children: [
-                    for (final a in apps)
-                      _AppTile(
-                        app: a,
-                        dimmed: installed != null && !installed.contains(a),
-                        onTap: () async {
-                          try {
-                            await AppScope.of(context).devices.launchApp(widget.device, a);
-                          } catch (e) {
-                            widget.remote._toast(e);
-                          }
-                        },
-                      ),
-                  ],
-                ),
-        ),
-      ],
-    );
-  }
-}
-
-class _AppTile extends StatelessWidget {
-  const _AppTile({required this.app, required this.onTap, this.dimmed = false});
-  final AppShortcut app;
-  final VoidCallback onTap;
-  final bool dimmed;
-
-  @override
-  Widget build(BuildContext context) {
-    final cs = Theme.of(context).colorScheme;
-    return Semantics(
-      button: true,
-      label: 'Abrir ${app.label}',
-      child: InkWell(
-        borderRadius: BorderRadius.circular(20),
-        onTap: onTap,
-        child: Opacity(
-          opacity: dimmed ? 0.4 : 1,
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              ClipRRect(
-                borderRadius: BorderRadius.circular(18),
-                child: Image.asset(
-                  app.asset,
-                  width: 72,
-                  height: 72,
-                  filterQuality: FilterQuality.medium,
-                  errorBuilder: (_, _, _) => Container(
-                    width: 72,
-                    height: 72,
-                    decoration: BoxDecoration(
-                      color: cs.surfaceContainerHighest,
-                      borderRadius: BorderRadius.circular(18),
-                    ),
-                    alignment: Alignment.center,
-                    child: Text(app.label.substring(0, 1), style: Theme.of(context).textTheme.headlineSmall),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                app.label,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: Theme.of(context).textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w600),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _KeyboardPanel extends StatefulWidget {
-  const _KeyboardPanel({required this.remote, required this.device});
-  final _RemoteScreenState remote;
-  final RemoteDevice device;
-
-  @override
-  State<_KeyboardPanel> createState() => _KeyboardPanelState();
-}
-
-/// Teclado do controle: modo ABC (letras) e 123 (números/símbolos), cada
-/// toque enviado como pressionamento de tecla, igual ao painel Números.
-/// Abaixo, campo para enviar uma frase inteira de uma vez.
-class _KeyboardPanelState extends State<_KeyboardPanel> {
-  static const _alpha = ['qwertyuiop', 'asdfghjkl', 'zxcvbnm'];
-  static const _numeric = ['1234567890', '@.-_/', '+=,;\''];
-
-  final _ctrl = TextEditingController();
-  bool _sending = false;
-  bool _numericMode = false;
-  bool _busy = false;
-
-  @override
-  void dispose() {
-    _ctrl.dispose();
-    super.dispose();
-  }
-
-  Future<void> _char(String ch) async {
-    if (_busy) return;
-    _busy = true;
-    try {
-      await AppScope.of(context).devices.sendChar(widget.device, ch);
-    } catch (e) {
-      widget.remote._toast(e);
-    } finally {
-      _busy = false;
-    }
-  }
-
-  Future<void> _send() async {
-    final text = _ctrl.text;
-    if (text.isEmpty) return;
-    setState(() => _sending = true);
-    try {
-      await AppScope.of(context).devices.sendText(widget.device, text);
-      _ctrl.clear();
-    } catch (e) {
-      widget.remote._toast(e);
-    } finally {
-      if (mounted) setState(() => _sending = false);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final supported = widget.remote._controller?.capabilities.contains(RemoteCapability.textInput) ?? false;
-    final haptics = AppScope.of(context).settings.haptics;
-    final cs = Theme.of(context).colorScheme;
-    if (!supported) {
-      return Center(
-        child: Text('Este dispositivo não aceita digitação remota.', style: TextStyle(color: cs.onSurfaceVariant)),
-      );
-    }
-    final rows = _numericMode ? _numeric : _alpha;
+    final lettersSupported = remote._supports(RemoteKey.letterA);
     return LayoutBuilder(
       builder: (context, c) {
-        final keyW = ((c.maxWidth - 24) / 10 - 4).clamp(26.0, 40.0);
-        Widget key(
-          String ch, {
-          String? label,
-          IconData? icon,
-          double? width,
-          VoidCallback? onTap,
-          bool accent = false,
-        }) => _KeyCap(
-          label: icon == null ? (label ?? ch) : null,
-          icon: icon,
-          semanticLabel: label ?? ch,
-          width: width ?? keyW,
-          height: keyW * 1.25,
-          accent: accent,
+        final keyW = ((c.maxWidth - 24) / 10 - 6).clamp(28.0, 44.0);
+        Widget letter(RemoteKey k) => RemoteButton(
+          label: k.char.toUpperCase(),
+          semanticLabel: 'Letra ${k.char.toUpperCase()}',
+          size: keyW,
           haptics: haptics,
-          onTap: onTap ?? () => _char(ch),
+          enabled: remote._supports(k),
+          onTap: () => remote._key(k),
         );
-        return SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(12, 12, 12, 12),
-          child: Column(
-            children: [
-              for (final row in rows)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 6),
-                  child: Wrap(
-                    spacing: 4,
-                    alignment: WrapAlignment.center,
-                    children: [for (final ch in row.split('')) key(ch)],
+        return Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (_alpha) ...[
+                  for (final row in _alphaRows)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 10),
+                      child: Wrap(
+                        spacing: 6,
+                        alignment: WrapAlignment.center,
+                        children: [for (final ch in row.split('')) letter(RemoteKey.fromLetter(ch)!)],
+                      ),
+                    ),
+                  const SizedBox(height: 8),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                    children: [
+                      n(RemoteKey.space, 'Espaço', icon: Icons.space_bar),
+                      n(RemoteKey.backspace, 'Apagar', icon: Icons.backspace_outlined),
+                      n(RemoteKey.enter, 'Enter', icon: Icons.keyboard_return),
+                    ],
                   ),
-                ),
-              Wrap(
-                spacing: 4,
-                alignment: WrapAlignment.center,
-                children: [
-                  key(
-                    '',
-                    label: _numericMode ? 'ABC' : '123',
-                    width: keyW * 1.8,
-                    onTap: () => setState(() => _numericMode = !_numericMode),
+                ] else ...[
+                  for (final row in [
+                    [1, 2, 3],
+                    [4, 5, 6],
+                    [7, 8, 9],
+                  ])
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 18),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                        children: [for (final d in row) n(RemoteKey.fromDigit(d), '$d')],
+                      ),
+                    ),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                    children: [
+                      n(RemoteKey.dash, 'Traço', icon: Icons.remove),
+                      n(RemoteKey.num0, '0'),
+                      n(RemoteKey.backspace, 'Apagar', icon: Icons.backspace_outlined),
+                    ],
                   ),
-                  key(' ', label: 'espaço', icon: Icons.space_bar, width: keyW * 3.6),
-                  key(
-                    '',
-                    label: 'Apagar',
-                    icon: Icons.backspace_outlined,
-                    width: keyW * 1.8,
-                    onTap: () => widget.remote._key(RemoteKey.backspace),
-                  ),
-                  key(
-                    '',
-                    label: 'Enter',
-                    icon: Icons.keyboard_return,
-                    width: keyW * 1.8,
-                    accent: true,
-                    onTap: () => widget.remote._key(RemoteKey.enter),
+                  const SizedBox(height: 18),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                    children: [
+                      RemotePill(
+                        topIcon: Icons.keyboard_arrow_up,
+                        bottomIcon: Icons.keyboard_arrow_down,
+                        label: 'CH',
+                        height: 120,
+                        enabled: remote._supports(RemoteKey.channelUp),
+                        onTop: () => remote._key(RemoteKey.channelUp),
+                        onBottom: () => remote._key(RemoteKey.channelDown),
+                      ),
+                      n(RemoteKey.enter, 'Enter', icon: Icons.keyboard_return),
+                      n(RemoteKey.guide, 'Guia', icon: Icons.list_alt),
+                    ],
                   ),
                 ],
-              ),
-              const SizedBox(height: 16),
-              Text(
-                'Ou envie uma frase inteira para o campo em foco na TV:',
-                style: TextStyle(color: cs.onSurfaceVariant, fontSize: 12),
-              ),
-              const SizedBox(height: 8),
-              Row(
-                children: [
-                  Expanded(
-                    child: TextField(
-                      controller: _ctrl,
-                      enabled: !_sending,
-                      maxLength: 200,
-                      textInputAction: TextInputAction.send,
-                      onSubmitted: (_) => _send(),
-                      decoration: const InputDecoration(hintText: 'Texto para a TV', counterText: '', isDense: true),
+                const SizedBox(height: 24),
+                SegmentedButton<bool>(
+                  segments: const [
+                    ButtonSegment(value: false, label: Text('123'), icon: Icon(Icons.dialpad)),
+                    ButtonSegment(value: true, label: Text('ABC'), icon: Icon(Icons.abc)),
+                  ],
+                  selected: {_alpha},
+                  showSelectedIcon: false,
+                  onSelectionChanged: lettersSupported ? (v) => setState(() => _alpha = v.first) : null,
+                ),
+                if (!lettersSupported)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: Text(
+                      'Este aparelho não aceita letras pelo controle.',
+                      style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant, fontSize: 12),
                     ),
                   ),
-                  const SizedBox(width: 8),
-                  FilledButton.icon(
-                    onPressed: _sending ? null : _send,
-                    icon: const Icon(Icons.send, size: 18),
-                    label: const Text('Enviar'),
-                  ),
-                ],
-              ),
-            ],
+              ],
+            ),
           ),
         );
       },
-    );
-  }
-}
-
-/// Tecla retangular do teclado (largura variável), no estilo dos botões do controle.
-class _KeyCap extends StatefulWidget {
-  const _KeyCap({
-    required this.onTap,
-    required this.width,
-    required this.height,
-    this.label,
-    this.icon,
-    this.semanticLabel,
-    this.accent = false,
-    this.haptics = true,
-  });
-  final VoidCallback onTap;
-  final double width;
-  final double height;
-  final String? label;
-  final IconData? icon;
-  final String? semanticLabel;
-  final bool accent;
-  final bool haptics;
-
-  @override
-  State<_KeyCap> createState() => _KeyCapState();
-}
-
-class _KeyCapState extends State<_KeyCap> {
-  bool _pressed = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final style = Theme.of(context).extension<RemoteButtonStyle>()!;
-    final fg = widget.accent ? style.onAccent : style.icon;
-    final bg = _pressed
-        ? (widget.accent ? style.accent.withValues(alpha: 0.7) : style.fillPressed)
-        : (widget.accent ? style.accent : style.fill);
-    return Semantics(
-      button: true,
-      label: widget.semanticLabel ?? widget.label,
-      child: GestureDetector(
-        onTapDown: (_) => setState(() => _pressed = true),
-        onTapUp: (_) => setState(() => _pressed = false),
-        onTapCancel: () => setState(() => _pressed = false),
-        onTap: () {
-          if (widget.haptics) HapticFeedback.lightImpact();
-          widget.onTap();
-        },
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 90),
-          width: widget.width,
-          height: widget.height,
-          alignment: Alignment.center,
-          decoration: BoxDecoration(
-            color: bg,
-            borderRadius: BorderRadius.circular(10),
-            border: style.border == BorderSide.none ? null : Border.fromBorderSide(style.border),
-          ),
-          child: widget.icon != null
-              ? Icon(widget.icon, size: widget.height * 0.5, color: fg)
-              : Text(
-                  widget.label ?? '',
-                  style: TextStyle(color: fg, fontSize: widget.height * 0.42, fontWeight: FontWeight.w600),
-                ),
-        ),
-      ),
     );
   }
 }

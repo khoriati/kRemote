@@ -189,6 +189,85 @@ class _ScriptedDiscovery implements DeviceDiscovery {
 }
 
 void relocationTests() {
+  group('identidade por certificado (troca de rede, TV homônima, TV renomeada)', () {
+    const pinSala = 'aa11';
+    late MemoryDeviceRepository repo;
+    late MemoryCredentialStore creds;
+    late MemoryPinStore pins;
+    late _ScriptedDiscovery disc;
+    late Map<String, String?> certs; // host → impressão digital
+    late DeviceService svc;
+
+    RemoteDevice sala() => const RemoteDevice(
+      id: 'androidTv-192-168-1-50-6466',
+      name: 'Sala',
+      host: '192.168.1.50',
+      port: 6466,
+      protocol: RemoteProtocol.androidTv,
+      pairingPort: 6467,
+      serviceName: 'Sala',
+    );
+
+    DiscoveredDevice seen(String name, String host) =>
+        DiscoveredDevice(name: name, host: host, port: 6466, protocol: RemoteProtocol.androidTv, serviceName: name);
+
+    setUp(() async {
+      repo = MemoryDeviceRepository()..saved = [sala()];
+      creds = MemoryCredentialStore()..data[sala().id] = ClientIdentity.generate().toCredentials();
+      pins = MemoryPinStore()..pins[sala().id] = pinSala;
+      disc = _ScriptedDiscovery();
+      certs = {};
+      svc = DeviceService(
+        repository: repo,
+        credentials: creds,
+        pins: pins,
+        factory: ControllerFactory(credentials: creds, pins: pins),
+        scanner: NetworkScanner(disc, staleAfter: const Duration(milliseconds: 40)),
+        probe: (host, port) async => false,
+        fingerprintProbe: (host, port) async => certs[host],
+      );
+      await svc.load();
+    });
+
+    test('TV homônima em outra rede com certificado diferente não é confundida com a cadastrada', () async {
+      disc.next = [seen('Sala', '192.168.0.9')];
+      certs['192.168.0.9'] = 'outra';
+      expect(await svc.relocate(svc.active!), isNull);
+      expect(svc.active!.host, '192.168.1.50', reason: 'cadastro intocado');
+    });
+
+    test('TV renomeada é reencontrada pelo certificado mesmo sem casar por nome', () async {
+      disc.next = [seen('Quarto', '192.168.1.80'), seen('Outra', '192.168.1.81')];
+      certs['192.168.1.80'] = pinSala;
+      certs['192.168.1.81'] = 'x';
+      final moved = await svc.relocate(svc.active!);
+      expect(moved?.host, '192.168.1.80');
+      expect(moved?.id, sala().id);
+      expect(svc.isPaired(moved!), isTrue);
+    });
+
+    test('entre duas homônimas, escolhe a que tem o certificado fixado', () async {
+      disc.next = [seen('Sala', '192.168.1.60'), seen('Sala', '192.168.1.61')];
+      certs['192.168.1.60'] = 'x';
+      certs['192.168.1.61'] = pinSala;
+      expect((await svc.relocate(svc.active!))?.host, '192.168.1.61');
+    });
+
+    test('sem conseguir ler certificados, vale a heurística por nome', () async {
+      disc.next = [seen('Sala', '192.168.1.70')];
+      expect((await svc.relocate(svc.active!))?.host, '192.168.1.70');
+    });
+
+    test('add de aparelho já cadastrado em outro IP atualiza o cadastro em vez de duplicar', () async {
+      final added = await svc.add(seen('Sala', '192.168.7.7').toDevice());
+      expect(added.id, sala().id, reason: 'mesmo cadastro, mesmas credenciais');
+      expect(added.host, '192.168.7.7');
+      expect(svc.devices, hasLength(1));
+      expect(svc.isPaired(added), isTrue);
+      expect(repo.saved.single.host, '192.168.7.7');
+    });
+  });
+
   group('relocalização e presença (IP muda após reinício do roteador / troca de Wi-Fi)', () {
     late MemoryDeviceRepository repo;
     late MemoryCredentialStore creds;
