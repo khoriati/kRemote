@@ -67,6 +67,12 @@ IP, rede, nome amigável nem nome da instância mDNS. Regras:
   viva, então o controlador tenta de novo (`connectAttempts`) antes de
   concluir que o cliente não é reconhecido. Falhas TLS no meio de uma sessão
   já estabelecida são queda de rede, não recusa.
+- **Recusa do certificado do celular** (`HandshakeException` ou alerta
+  `CERTIFICATE_UNKNOWN`, que chega como `TlsException`) durante a conexão é
+  "cliente não reconhecido" → emparelhar; só depois da segunda tentativa.
+- **Nome de cliente único por celular** no emparelhamento (`kRemote (<host>)`
+  ou `kRemote <SO> <sufixo>`): a TV lista os controles por esse nome e dois
+  aparelhos chamados só "kRemote" podem substituir o emparelhamento um do outro.
 - **Armazenamento seguro** sem `resetOnError` (Android) e com nova tentativa
   na leitura: um erro transitório do Keystore não apaga nem "desemparelha".
 

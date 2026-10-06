@@ -97,13 +97,40 @@ class AndroidTvPairingFlow implements PairingFlow {
     this.trust, {
     ClientIdentity? identity,
     Future<ClientIdentity> Function()? identityProvider,
-    this.clientName = 'kRemote',
+    String? clientName,
   }) : _identity = identity, // ignore: prefer_initializing_formals
-       _identityProvider = identityProvider; // ignore: prefer_initializing_formals
+       _identityProvider = identityProvider, // ignore: prefer_initializing_formals
+       _clientName = clientName; // ignore: prefer_initializing_formals
 
   final RemoteDevice device;
   final TlsTrust trust;
-  final String clientName;
+  final String? _clientName;
+
+  /// Nome com que o app se apresenta à TV. Único por celular: a TV lista os
+  /// controles emparelhados por esse nome e dois aparelhos chamados apenas
+  /// "kRemote" podem substituir o emparelhamento um do outro.
+  String get clientName => _clientName ?? clientNameFor(_identity);
+
+  static String clientNameFor(ClientIdentity? identity) {
+    var host = '';
+    try {
+      host = Platform.localHostname.trim();
+    } catch (_) {
+      // sem nome de host disponível
+    }
+    if (host.isNotEmpty && host.toLowerCase() != 'localhost') {
+      return 'kRemote ($host)'.length <= 40 ? 'kRemote ($host)' : 'kRemote (${host.substring(0, 30)})';
+    }
+    final os = Platform.isIOS
+        ? 'iPhone'
+        : Platform.isAndroid
+        ? 'Android'
+        : Platform.operatingSystem;
+    final suffix = identity == null
+        ? ''
+        : ' ${crypto.sha256.convert(identity.certificatePem.codeUnits).toString().substring(0, 4).toUpperCase()}';
+    return 'kRemote $os$suffix';
+  }
 
   /// Identidade do cliente. Se ausente, obtida de [_identityProvider] (ou
   /// gerada em isolate) no [start], sem bloquear a UI.
@@ -154,6 +181,7 @@ class AndroidTvPairingFlow implements PairingFlow {
       if (der == null) throw const PairingException('TV não apresentou certificado');
       _serverKey = RsaPublicNumbers.fromCertificateDer(der);
       socket.listen(_onData, onError: (Object e) => _fail('Conexão perdida: $e'), onDone: _onDone);
+      KLog.d('atv-pairing', 'apresentando-se como "$clientName"');
       socket.add(PairingMessages.pairingRequest(clientName));
     } on PairingException catch (e) {
       _fail(e.message);

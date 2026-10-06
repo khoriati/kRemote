@@ -319,9 +319,11 @@ class AndroidTvController extends BaseRemoteController {
 
   void _onError(Object e) {
     log('erro de socket: $e');
-    // Só a recusa do handshake indica cliente não reconhecido; outras falhas
-    // TLS no meio da sessão (rede trocada, socket morto) são queda comum.
-    final rejected = e is HandshakeException && currentState == DeviceConnectionState.connecting;
+    // Durante a conexão, uma falha TLS (HandshakeException ou o alerta
+    // CERTIFICATE_UNKNOWN, que chega como TlsException) é a TV recusando o
+    // nosso certificado: cliente não reconhecido. Falha TLS com a sessão já
+    // estabelecida (rede trocada, socket morto) é queda comum.
+    final rejected = e is TlsException && currentState == DeviceConnectionState.connecting;
     _teardown(rejected ? DeviceConnectionState.needsPairing : DeviceConnectionState.error);
     _completeReadyError(
       rejected
