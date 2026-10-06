@@ -7,6 +7,7 @@ import '../../../domain/entities/app_shortcut.dart';
 import '../../../domain/entities/connection_state.dart';
 import '../../../domain/entities/remote_key.dart';
 import '../../../domain/errors.dart';
+import '../../../domain/ports/wake_source.dart';
 import '../../net/protobuf.dart';
 import '../../net/tls_trust.dart';
 import '../base_controller.dart';
@@ -68,7 +69,7 @@ class CastMessageCodec {
 
 /// Controlador Chromecast (Cast v2, porta 8009). Sem D-pad: o Cast não expõe
 /// navegação de UI, apenas volume, mídia e apps.
-class CastController extends BaseRemoteController {
+class CastController extends BaseRemoteController implements WakeSource {
   CastController(super.device, this.trust);
 
   final TlsTrust trust;
@@ -366,6 +367,22 @@ class CastController extends BaseRemoteController {
       default:
         unsupported(key);
     }
+  }
+
+  /// App id do receptor padrão do Cast (Default Media Receiver).
+  static const defaultReceiverAppId = 'CC1AD845';
+
+  /// Acorda uma Google TV em repouso como faz o app Google Home: abrir um
+  /// app Cast liga o aparelho (e, no Chromecast, a TV via CEC).
+  @override
+  Future<void> wakeUp() async {
+    await ensureConnected();
+    log('wake: LAUNCH $defaultReceiverAppId');
+    _send(_receiver, CastMessageCodec.nsReceiver, {
+      'type': 'LAUNCH',
+      'requestId': _requestId++,
+      'appId': defaultReceiverAppId,
+    });
   }
 
   @override

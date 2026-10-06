@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:kremote/application/device_service.dart';
 import 'package:kremote/application/network_scanner.dart';
+import 'package:kremote/domain/entities/connection_state.dart';
 import 'package:kremote/domain/entities/remote_device.dart';
 import 'package:kremote/domain/errors.dart';
 import 'package:kremote/domain/ports/device_discovery.dart';
@@ -410,6 +411,22 @@ void relocationTests() {
       expect(svc.devices.first.host, '192.168.1.77', reason: 'fora da rede → varredura → IP novo');
       expect(svc.isOnline(svc.devices.first), isTrue);
       expect(notified, greaterThan(0));
+    });
+
+    test('porta de repouso respondendo é standby, não falha, e não dispara relocalização', () async {
+      repo.saved = [sala()];
+      await svc.load();
+      reachable.add('192.168.1.50:8009');
+      expect(await svc.probePresence(svc.active!), Presence.standby);
+      expect(svc.presence(svc.active!), Presence.standby);
+      expect(svc.isOnline(svc.active!), isTrue);
+      disc.next = [
+        const DiscoveredDevice(name: 'Sala', host: '192.168.1.99', port: 6466, protocol: RemoteProtocol.androidTv),
+      ];
+      await svc.refreshPresence();
+      expect(svc.active!.host, '192.168.1.50', reason: 'em repouso não se relocaliza');
+      reachable.add('192.168.1.50:6466');
+      expect(await svc.probePresence(svc.active!), Presence.online);
     });
 
     test('isReachable usa o probe e registra presença', () async {

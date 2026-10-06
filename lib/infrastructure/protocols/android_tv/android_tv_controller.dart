@@ -7,6 +7,7 @@ import '../../../domain/entities/connection_state.dart';
 import '../../../domain/entities/remote_key.dart';
 import '../../../domain/errors.dart';
 import '../../../domain/ports/remote_controller.dart';
+import '../../../domain/ports/wake_source.dart';
 import '../../net/protobuf.dart';
 import '../../net/tls_trust.dart';
 import '../../net/wake_on_lan.dart';
@@ -115,8 +116,33 @@ class AndroidTvController extends BaseRemoteController {
     if (mac == null) return false;
     log('enviando Wake-on-LAN');
     await const WakeOnLan().wake(mac, host: device.host);
+    return _awaitService(timeout);
+  }
+
+  /// Acorda o aparelho em repouso pela porta de repouso (receptor Cast), como
+  /// o app Google Home, e aguarda o serviço de controle subir. Ao conectar,
+  /// envia HOME para sair da tela do receptor. Retorna verdadeiro se ligou.
+  Future<bool> wakeFromStandby({Duration timeout = const Duration(seconds: 20)}) async {
+    final source = _cast;
+    if (source is! WakeSource) return false;
+    try {
+      await (source as WakeSource).wakeUp();
+    } on RemoteException catch (e) {
+      log('wake via Cast falhou: ${e.message}');
+      return false;
+    }
+    final ok = await _awaitService(timeout);
+    if (ok) {
+      _socket?.add(RemoteMessages.keyInject(androidTvKeyCodes[RemoteKey.home]!, RemoteMessages.directionShort));
+      log('acordou via Cast; HOME enviado');
+    }
+    await _cast?.disconnect();
+    return ok;
+  }
+
+  Future<bool> _awaitService(Duration timeout) async {
     final deadline = DateTime.now().add(timeout);
-    while (DateTime.now().isBefore(deadline)) {
+    while (DateTime.now().isBefore(deadline) && !_disposed) {
       await Future<void>.delayed(const Duration(seconds: 2));
       try {
         await connect();
@@ -372,8 +398,11 @@ class AndroidTvController extends BaseRemoteController {
       try {
         await ensureConnected();
       } on RemoteException {
+        // Cascata: porta de repouso (Cast) → Wake-on-LAN (com MAC) → aviso.
+        // Acordou: não enviar Power (desligaria de novo).
+        if (await wakeFromStandby()) return;
         if (device.macAddress != null) {
-          if (await wake()) return; // acordou: não enviar Power (desligaria)
+          if (await wake()) return;
           throw const ConnectionException('Aparelho não respondeu ao Wake-on-LAN');
         }
         throw const ConnectionException(

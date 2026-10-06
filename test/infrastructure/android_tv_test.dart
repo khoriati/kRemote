@@ -10,6 +10,7 @@ import 'package:kremote/domain/entities/remote_device.dart';
 import 'package:kremote/domain/entities/remote_key.dart';
 import 'package:kremote/domain/errors.dart';
 import 'package:kremote/domain/ports/pairing_flow.dart';
+import 'package:kremote/domain/ports/wake_source.dart';
 import 'package:kremote/infrastructure/net/protobuf.dart';
 import 'package:kremote/infrastructure/net/tls_trust.dart';
 import 'package:kremote/infrastructure/protocols/android_tv/android_tv_certificate.dart';
@@ -391,6 +392,27 @@ void main() {
       expect(c.capabilities, isNot(contains(RemoteCapability.wakeOnLan)));
     });
 
+    test('Power com TV em repouso acorda pela porta de repouso (Cast) e envia HOME, não Power', () async {
+      final server = FakeRemoteServer(tv, trustedClientPem: client.certificatePem)..dropFirstConnections = 1 << 30;
+      await server.start();
+      addTearDown(server.close);
+      final dev = device(port: server.port);
+      final cast = _WakingController(dev, onWake: () => server.dropFirstConnections = 0);
+      final c = AndroidTvController(
+        dev,
+        client,
+        TlsTrust(deviceId: dev.id, store: MemoryPinStore()),
+        cast: cast,
+      );
+      addTearDown(c.dispose);
+      await c.sendKey(RemoteKey.power);
+      expect(cast.woke, isTrue);
+      expect(c.currentState, DeviceConnectionState.connected);
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      expect(server.keyInjects.map((k) => k.$1), contains(3), reason: 'HOME após acordar');
+      expect(server.keyInjects.map((k) => k.$1), isNot(contains(26)), reason: 'Power desligaria de novo');
+    });
+
     test('Power com MAC e aparelho inacessível tenta Wake-on-LAN', () async {
       const dev = RemoteDevice(
         id: 'dev-1',
@@ -444,6 +466,17 @@ class X509CertificateFake implements X509Certificate {
 }
 
 /// Controlador que só registra teclas (simula o Cast).
+class _WakingController extends _RecordingController implements WakeSource {
+  _WakingController(super.device, {required this.onWake});
+  final void Function() onWake;
+  bool woke = false;
+  @override
+  Future<void> wakeUp() async {
+    woke = true;
+    onWake();
+  }
+}
+
 class _RecordingController extends BaseRemoteController {
   _RecordingController(super.device);
   final keys = <RemoteKey>[];

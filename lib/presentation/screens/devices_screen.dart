@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../app/app_scope.dart';
 import '../../application/device_service.dart';
+import '../../domain/entities/connection_state.dart';
 import '../../domain/entities/remote_device.dart';
 import 'add_device_screen.dart';
 import 'available_devices_sheet.dart';
@@ -60,10 +61,11 @@ class _DevicesScreenState extends State<DevicesScreen> {
             itemBuilder: (context, i) {
               final d = list[i];
               final isActive = svc.active?.id == d.id;
-              final online = d.protocol.isNetwork ? svc.isOnline(d) : null;
-              final presence = switch (online) {
-                true => ' · na rede',
-                false => ' · fora da rede',
+              final p = d.protocol.isNetwork ? svc.presence(d) : null;
+              final presence = switch (p) {
+                Presence.online => ' · na rede',
+                Presence.standby => ' · em repouso',
+                Presence.offline => ' · fora da rede',
                 null => '',
               };
               return Card(
@@ -72,7 +74,7 @@ class _DevicesScreenState extends State<DevicesScreen> {
                     clipBehavior: Clip.none,
                     children: [
                       Icon(Icons.tv, color: isActive ? Theme.of(context).colorScheme.primary : null),
-                      if (d.protocol.isNetwork) Positioned(right: -8, bottom: -6, child: PresenceDot(online: online)),
+                      if (d.protocol.isNetwork) Positioned(right: -8, bottom: -6, child: PresenceDot(presence: p)),
                     ],
                   ),
                   title: Text(d.name),

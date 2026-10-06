@@ -38,6 +38,14 @@ enum RemoteProtocol {
   /// Protocolos de rede (adicionáveis por IP).
   bool get isNetwork => this != bluetoothHid;
 
+  /// Porta que continua respondendo com o aparelho em repouso, se houver.
+  /// Na Google TV é o receptor Cast (8009), que fica vivo em standby e serve
+  /// para distinguir "desligada" de "fora da rede" — e para acordá-la.
+  int? get standbyPort => switch (this) {
+    androidTv => cast.defaultPort,
+    _ => null,
+  };
+
   /// Indica se o protocolo exige emparelhamento antes de controlar.
   bool get requiresPairing => switch (this) {
     androidTv || samsungTizen || lgWebOs || vizioSmartCast || sonyBravia => true,

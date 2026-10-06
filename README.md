@@ -70,6 +70,22 @@ IP, rede, nome amigável nem nome da instância mDNS. Regras:
 - **Armazenamento seguro** sem `resetOnError` (Android) e com nova tentativa
   na leitura: um erro transitório do Keystore não apaga nem "desemparelha".
 
+## TV em repouso (standby)
+
+Antes de concluir "fora da rede", a presença sonda também a **porta de
+repouso** (`RemoteProtocol.standbyPort`, o receptor Cast 8009 na Google TV),
+que continua respondendo com a TV desligada em "standby em rede". Resultado
+em três estados (`Presence`): ligado, em repouso, fora da rede.
+
+- **Em repouso** o controle não insiste na 6466, não relocaliza nem abre a
+  lista de disponíveis: o chip mostra *Em repouso* e um toque nele (ou no
+  Power) liga a TV.
+- **Power em repouso** segue a cascata: `wakeFromStandby` (Cast `LAUNCH` do
+  receptor padrão, como faz o Google Home; ao subir a 6466 envia HOME para
+  sair da tela do receptor) → Wake-on-LAN se houver MAC → aviso.
+- **Sondagem repetida** na reconexão automática (duas vezes, intervalo curto),
+  porque o Wi-Fi da TV em economia de energia perde o primeiro pacote.
+
 ## Teclado
 
 O painel *Números* tem os modos **123** e **ABC**: letras, espaço, apagar e

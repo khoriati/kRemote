@@ -128,7 +128,17 @@ class _RemoteScreenState extends State<RemoteScreen> with WidgetsBindingObserver
     if (d == null || !svc.isPaired(d)) return;
     _recovering = true;
     try {
-      if (await svc.isReachable(d)) {
+      // Antes de concluir falha, sonda também a porta de repouso: uma TV
+      // desligada com "standby em rede" responde só nela. Duas sondagens,
+      // porque o Wi-Fi da TV em economia de energia perde o primeiro pacote.
+      final presence = await svc.probePresence(d, attempts: 2);
+      if (!mounted) return;
+      if (presence == Presence.standby) {
+        KLog.d('ui', '${d.name} em repouso (porta de repouso responde); aguardando Power');
+        setState(() => _state = DeviceConnectionState.standby);
+        return;
+      }
+      if (presence == Presence.online) {
         try {
           await svc.connect(d);
           return;
@@ -222,12 +232,20 @@ class _RemoteScreenState extends State<RemoteScreen> with WidgetsBindingObserver
       if (mounted && !_recovering) unawaited(_reconnect());
     } on ConnectionException catch (e) {
       if (!mounted) return;
-      // Pode ser mudança de IP: tenta reencontrar o aparelho antes de avisar.
-      if (!_recovering && !await svc.isReachable(d)) {
-        unawaited(_reconnect());
+      if (_recovering) {
+        _toast(e);
         return;
       }
-      _toast(e);
+      switch (await svc.probePresence(d)) {
+        case Presence.standby:
+          if (mounted) setState(() => _state = DeviceConnectionState.standby);
+          _toast(k == RemoteKey.power ? e : const ConnectionException('TV em repouso. Toque em Power para ligar.'));
+        case Presence.offline:
+          // Pode ser mudança de IP: tenta reencontrar o aparelho antes de avisar.
+          unawaited(_reconnect());
+        case Presence.online:
+          _toast(e);
+      }
     } catch (e) {
       _toast(e);
     }
@@ -269,7 +287,11 @@ class _RemoteScreenState extends State<RemoteScreen> with WidgetsBindingObserver
                   padding: const EdgeInsets.only(right: 4),
                   child: Center(
                     child: GestureDetector(
-                      onTap: () => svc.isPaired(active) ? _reconnect(auto: true) : _pair(active),
+                      onTap: () => !svc.isPaired(active)
+                          ? _pair(active)
+                          : _state == DeviceConnectionState.standby
+                          ? _key(RemoteKey.power)
+                          : _reconnect(auto: true),
                       child: StatusChip(state: _state, paired: svc.isPaired(active)),
                     ),
                   ),

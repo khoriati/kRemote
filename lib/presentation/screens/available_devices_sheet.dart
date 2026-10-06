@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../app/app_scope.dart';
+import '../../domain/entities/connection_state.dart';
 import '../../domain/entities/remote_device.dart';
 import '../../domain/errors.dart';
 import 'add_device_screen.dart';
@@ -98,7 +99,7 @@ class _AvailableDevicesSheetState extends State<AvailableDevicesSheet> {
               for (final d in registered)
                 ListTile(
                   contentPadding: EdgeInsets.zero,
-                  leading: PresenceDot(online: svc.isOnline(d), size: 14),
+                  leading: PresenceDot(presence: svc.presence(d), size: 14),
                   title: Text(d.name),
                   subtitle: Text('${d.protocol.label} · ${d.protocol.isNetwork ? d.host : ''}'),
                   trailing: svc.active?.id == d.id ? Icon(Icons.check, color: cs.primary) : null,
@@ -176,24 +177,27 @@ class _Header extends StatelessWidget {
   );
 }
 
-/// Indicador de presença na rede: verde (na rede), cinza (fora), vazio (a verificar).
+/// Indicador de presença na rede: verde (ligado), âmbar (em repouso), cinza
+/// (fora da rede), vazio (a verificar).
 class PresenceDot extends StatelessWidget {
-  const PresenceDot({super.key, required this.online, this.size = 10});
-  final bool? online;
+  const PresenceDot({super.key, required this.presence, this.size = 10});
+  final Presence? presence;
   final double size;
 
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    final color = switch (online) {
-      true => Colors.green,
-      false => cs.outline,
+    final color = switch (presence) {
+      Presence.online => Colors.green,
+      Presence.standby => Colors.amber,
+      Presence.offline => cs.outline,
       null => Colors.transparent,
     };
     return Semantics(
-      label: switch (online) {
-        true => 'Na rede',
-        false => 'Fora da rede',
+      label: switch (presence) {
+        Presence.online => 'Na rede',
+        Presence.standby => 'Em repouso',
+        Presence.offline => 'Fora da rede',
         null => 'Verificando',
       },
       child: SizedBox(
@@ -206,7 +210,7 @@ class PresenceDot extends StatelessWidget {
             decoration: BoxDecoration(
               color: color,
               shape: BoxShape.circle,
-              border: online == null ? Border.all(color: cs.outline, width: 1.5) : null,
+              border: presence == null ? Border.all(color: cs.outline, width: 1.5) : null,
             ),
           ),
         ),

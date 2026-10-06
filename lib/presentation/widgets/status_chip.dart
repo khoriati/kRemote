@@ -18,6 +18,7 @@ class StatusChip extends StatelessWidget {
             DeviceConnectionState.connecting => ('Conectando…', cs.secondary, Icons.sync),
             DeviceConnectionState.needsPairing => ('Emparelhar', cs.tertiary, Icons.link_off),
             DeviceConnectionState.error => ('Falha', cs.error, Icons.error_outline),
+            DeviceConnectionState.standby => ('Em repouso', cs.secondary, Icons.bedtime_outlined),
             DeviceConnectionState.disconnected => ('Desconectado', cs.onSurfaceVariant, Icons.radio_button_unchecked),
           };
     return Semantics(

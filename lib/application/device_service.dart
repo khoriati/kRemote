@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import '../domain/entities/app_shortcut.dart';
+import '../domain/entities/connection_state.dart';
 import '../domain/entities/remote_device.dart';
 import '../domain/entities/remote_key.dart';
 import '../domain/errors.dart';
@@ -13,6 +14,7 @@ import '../domain/ports/pairing_flow.dart';
 import '../domain/ports/remote_controller.dart';
 import '../infrastructure/controller_factory.dart';
 import '../infrastructure/net/log.dart';
+import '../infrastructure/protocols/android_tv/android_tv_controller.dart';
 import '../infrastructure/protocols/base_controller.dart';
 import 'network_scanner.dart';
 
@@ -72,7 +74,7 @@ class DeviceService extends ChangeNotifier {
   final List<RemoteDevice> _devices = [];
   final Map<String, RemoteController> _controllers = {};
   final Map<String, bool> _paired = {};
-  final Map<String, bool> _online = {};
+  final Map<String, Presence> _presence = {};
   String? _activeId;
   bool _loaded = false;
 
@@ -180,7 +182,7 @@ class DeviceService extends ChangeNotifier {
       final i = _devices.indexOf(existing);
       _devices[i] = moved;
       await _disposeController(existing.id);
-      _online[existing.id] = true;
+      _presence[existing.id] = Presence.online;
       _activeId = existing.id;
       await _repo.saveAll(_devices);
       notifyListeners();
@@ -216,7 +218,7 @@ class DeviceService extends ChangeNotifier {
     await _pins.delete(id);
     await _pins.delete('$id-cast');
     _paired.remove(id);
-    _online.remove(id);
+    _presence.remove(id);
     if (_activeId == id) _activeId = _devices.firstOrNull?.id;
     await _repo.saveAll(_devices);
     notifyListeners();
@@ -242,20 +244,63 @@ class DeviceService extends ChangeNotifier {
   // Presença na rede (heartbeat) e relocalização por mudança de IP
   // ---------------------------------------------------------------------------
 
-  /// Última verificação de presença: `true`/`false`, ou `null` se ainda não
-  /// verificado (ou protocolo sem rede).
-  bool? isOnline(RemoteDevice d) => _online[d.id];
+  /// Última presença verificada, ou `null` se ainda não verificada (ou
+  /// protocolo sem rede).
+  Presence? presence(RemoteDevice d) => _presence[d.id];
 
-  /// Verifica se `host:port` do aparelho responde a TCP (rápido, ~2 s).
-  Future<bool> isReachable(RemoteDevice d) async {
+  /// Compatibilidade: na rede (ligado ou em repouso) / fora / não verificado.
+  bool? isOnline(RemoteDevice d) => switch (_presence[d.id]) {
+    null => null,
+    Presence.offline => false,
+    _ => true,
+  };
+
+  /// Sonda a presença do aparelho. Antes de concluir "fora da rede", testa a
+  /// porta de repouso ([RemoteProtocol.standbyPort]): uma Google TV desligada
+  /// com "standby em rede" só responde nela. [attempts] repete a sondagem com
+  /// um intervalo curto — o Wi-Fi em economia de energia perde o primeiro
+  /// pacote com frequência.
+  Future<Presence> probePresence(RemoteDevice d, {int attempts = 1}) async {
     final probe = _probe;
-    if (probe == null || !d.protocol.isNetwork) return true;
-    final ok = await probe(d.host, d.port);
-    if (_online[d.id] != ok) {
-      _online[d.id] = ok;
-      notifyListeners();
+    if (probe == null || !d.protocol.isNetwork) return Presence.online;
+    var result = Presence.offline;
+    for (var i = 0; i < attempts; i++) {
+      if (i > 0) await Future<void>.delayed(const Duration(milliseconds: 800));
+      result = await _probeOnce(d, probe);
+      if (result != Presence.offline) break;
     }
-    return ok;
+    _setPresence(d, result);
+    return result;
+  }
+
+  Future<Presence> _probeOnce(RemoteDevice d, PortProbe probe) async {
+    final standbyPort = d.protocol.standbyPort;
+    if (standbyPort == null) return await probe(d.host, d.port) ? Presence.online : Presence.offline;
+    final (main, standby) = await (probe(d.host, d.port), probe(d.host, standbyPort)).wait;
+    if (main) return Presence.online;
+    if (standby) return Presence.standby;
+    return Presence.offline;
+  }
+
+  void _setPresence(RemoteDevice d, Presence p) {
+    if (_presence[d.id] == p) return;
+    _presence[d.id] = p;
+    KLog.d('devices', '${d.name}: ${p.name}');
+    notifyListeners();
+  }
+
+  /// Verifica se o serviço de controle do aparelho responde (rápido, ~2 s).
+  Future<bool> isReachable(RemoteDevice d) async => await probePresence(d) == Presence.online;
+
+  /// Acorda um aparelho em repouso pela porta de repouso / Wake-on-LAN.
+  /// Retorna verdadeiro se o serviço de controle respondeu em seguida.
+  Future<bool> wake(RemoteDevice d) async {
+    final c = await controller(d);
+    if (c is AndroidTvController) {
+      if (await c.wakeFromStandby()) return true;
+      return c.wake();
+    }
+    return false;
   }
 
   /// Mantém a verificação periódica de presença enquanto houver observadores
@@ -281,16 +326,16 @@ class DeviceService extends ChangeNotifier {
     _refreshingPresence = true;
     try {
       final targets = _devices.where((d) => d.protocol.isNetwork).toList();
-      final results = await Future.wait(targets.map((d) => probe(d.host, d.port)));
+      final results = await Future.wait(targets.map((d) => _probeOnce(d, probe)));
       var changed = false;
       for (var i = 0; i < targets.length; i++) {
-        if (_online[targets[i].id] != results[i]) {
-          _online[targets[i].id] = results[i];
+        if (_presence[targets[i].id] != results[i]) {
+          _presence[targets[i].id] = results[i];
           changed = true;
         }
       }
       if (changed) notifyListeners();
-      final offline = targets.where((d) => _online[d.id] == false).toList();
+      final offline = targets.where((d) => _presence[d.id] == Presence.offline).toList();
       final now = DateTime.now();
       if (offline.isNotEmpty &&
           _scanner != null &&
@@ -336,7 +381,7 @@ class DeviceService extends ChangeNotifier {
       host: match.host,
       serviceName: d.serviceName ?? (match.protocol == d.protocol ? match.serviceName : null),
     );
-    _online[d.id] = true;
+    _presence[d.id] = Presence.online;
     await update(moved);
     return moved;
   }
