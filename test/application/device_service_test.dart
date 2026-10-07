@@ -452,6 +452,9 @@ void relocationTests() {
       final json = sala().toJson();
       expect(RemoteDevice.fromJson(json).serviceName, 'Sala');
       expect(RemoteDevice.fromJson(json..remove('serviceName')).serviceName, isNull, reason: 'cadastros antigos');
+      final bt = sala().copyWith(bluetoothAddress: 'AA:BB:CC:DD:EE:01');
+      expect(RemoteDevice.fromJson(bt.toJson()).bluetoothAddress, 'AA:BB:CC:DD:EE:01');
+      expect(bt.copyWith(clearBluetooth: true).bluetoothAddress, isNull);
     });
   });
 }

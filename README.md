@@ -86,9 +86,19 @@ em três estados (`Presence`): ligado, em repouso, fora da rede.
 - **Em repouso** o controle não insiste na 6466, não relocaliza nem abre a
   lista de disponíveis: o chip mostra *Em repouso* e um toque nele (ou no
   Power) liga a TV.
-- **Power em repouso** segue a cascata: `wakeFromStandby` (Cast `LAUNCH` do
-  receptor padrão, como faz o Google Home; ao subir a 6466 envia HOME para
-  sair da tela do receptor) → Wake-on-LAN se houver MAC → aviso.
+- **Power em repouso** dispara todos os canais disponíveis e espera o serviço
+  de controle subir uma vez (`wakeFromStandby`): Wake-on-LAN se houver MAC;
+  Cast `LAUNCH` do receptor padrão, como o Google Home (exige "standby em
+  rede" na TV); e **Bluetooth HID** se o celular foi pareado à TV. Ao subir a
+  6466 envia HOME para sair da tela do receptor.
+- **Ligar pela Bluetooth** (Android): em *Meus dispositivos › Ligar pela
+  Bluetooth*, o celular se anuncia como teclado HID (`BluetoothHidDevice`), o
+  usuário o adiciona em *Controles remotos e acessórios* na TV e escolhe a TV
+  entre os pareados; o endereço fica em `RemoteDevice.bluetoothAddress`. O
+  rádio Bluetooth da TV continua ligado em repouso mesmo com o Wi-Fi
+  desligado — é o único caminho nesse caso. `BluetoothHidWaker` conecta e
+  envia Power (Consumer 0x30 e teclado 0x66). iOS não pode atuar como
+  periférico HID, então lá a saída é "standby em rede" ou Wake-on-LAN.
 - **Sondagem repetida** na reconexão automática (duas vezes, intervalo curto),
   porque o Wi-Fi da TV em economia de energia perde o primeiro pacote.
 

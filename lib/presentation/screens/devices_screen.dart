@@ -6,6 +6,7 @@ import '../../domain/entities/connection_state.dart';
 import '../../domain/entities/remote_device.dart';
 import 'add_device_screen.dart';
 import 'available_devices_sheet.dart';
+import 'bluetooth_link_sheet.dart';
 import 'pairing_sheet.dart';
 
 /// Gestão dos dispositivos cadastrados, com presença na rede verificada
@@ -34,7 +35,8 @@ class _DevicesScreenState extends State<DevicesScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final svc = AppScope.of(context).devices;
+    final scope = AppScope.of(context);
+    final svc = scope.devices;
     return Scaffold(
       appBar: AppBar(title: const Text('Meus dispositivos')),
       floatingActionButton: FloatingActionButton.extended(
@@ -97,6 +99,15 @@ class _DevicesScreenState extends State<DevicesScreen> {
                           value: 'castvol',
                           child: Text(
                             d.volumeViaCast ? 'Volume por tecla (desligar Cast)' : 'Volume via Cast (recomendado)',
+                          ),
+                        ),
+                      if (d.protocol == RemoteProtocol.androidTv && scope.bluetooth.isPlatformSupported)
+                        PopupMenuItem(
+                          value: 'bt',
+                          child: Text(
+                            d.bluetoothAddress == null
+                                ? 'Ligar pela Bluetooth (Wi-Fi desligado em repouso)'
+                                : 'Bluetooth vinculado (${d.bluetoothAddress})',
                           ),
                         ),
                       if (d.protocol.isNetwork)
@@ -171,6 +182,8 @@ class _DevicesScreenState extends State<DevicesScreen> {
           return;
         }
         await svc.update(mac.isEmpty ? d.copyWith(clearMac: true) : d.copyWith(macAddress: mac));
+      case 'bt':
+        await BluetoothLinkSheet.show(context, d);
       case 'castvol':
         await svc.update(d.copyWith(volumeViaCast: !d.volumeViaCast));
       case 'trust':

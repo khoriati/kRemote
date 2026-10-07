@@ -74,9 +74,13 @@ class RemoteMessages {
 
 /// Controlador Google TV / Android TV (Android TV Remote v2, porta 6466).
 class AndroidTvController extends BaseRemoteController {
-  AndroidTvController(super.device, this.identity, this.trust, {RemoteController? cast})
+  AndroidTvController(super.device, this.identity, this.trust, {RemoteController? cast, WakeSource? bluetooth})
     // ignore: prefer_initializing_formals
-    : _cast = cast;
+    : _cast = cast,
+      _bluetooth = bluetooth; // ignore: prefer_initializing_formals
+
+  /// Despertar pelo Bluetooth (celular pareado à TV como teclado HID).
+  final WakeSource? _bluetooth;
 
   /// Identidade emparelhada; `null` enquanto o aparelho não foi emparelhado.
   final ClientIdentity? identity;
@@ -106,7 +110,7 @@ class AndroidTvController extends BaseRemoteController {
   Set<RemoteCapability> get capabilities => {
     RemoteCapability.textInput,
     RemoteCapability.appLaunch,
-    if (device.macAddress != null) RemoteCapability.wakeOnLan,
+    if (device.macAddress != null || _bluetooth != null) RemoteCapability.wakeOnLan,
   };
 
   /// Acorda o aparelho por Wake-on-LAN e aguarda o serviço remoto responder.
@@ -119,22 +123,55 @@ class AndroidTvController extends BaseRemoteController {
     return _awaitService(timeout);
   }
 
-  /// Acorda o aparelho em repouso pela porta de repouso (receptor Cast), como
-  /// o app Google Home, e aguarda o serviço de controle subir. Ao conectar,
-  /// envia HOME para sair da tela do receptor. Retorna verdadeiro se ligou.
+  /// Acorda o aparelho em repouso disparando, em sequência, todos os canais
+  /// disponíveis e aguardando o serviço de controle subir uma única vez:
+  ///
+  /// 1. Wake-on-LAN (se há MAC) — UDP, sem espera;
+  /// 2. porta de repouso (receptor Cast), como o app Google Home — funciona
+  ///    com "standby em rede" ativo na TV;
+  /// 3. Bluetooth HID (se o celular foi pareado à TV) — funciona mesmo com o
+  ///    Wi-Fi da TV desligado em repouso, como o controle físico.
+  ///
+  /// Ao conectar, envia HOME para sair da tela do receptor. Retorna
+  /// verdadeiro se ligou.
   Future<bool> wakeFromStandby({Duration timeout = const Duration(seconds: 20)}) async {
-    final source = _cast;
-    if (source is! WakeSource) return false;
-    try {
-      await (source as WakeSource).wakeUp();
-    } on RemoteException catch (e) {
-      log('wake via Cast falhou: ${e.message}');
-      return false;
+    var fired = false;
+    final mac = device.macAddress;
+    if (mac != null) {
+      try {
+        await const WakeOnLan().wake(mac, host: device.host);
+        log('wake: Wake-on-LAN enviado');
+        fired = true;
+      } catch (e) {
+        log('wake: Wake-on-LAN falhou: $e');
+      }
     }
+    final cast = _cast;
+    if (cast is WakeSource) {
+      try {
+        await (cast as WakeSource).wakeUp();
+        fired = true;
+      } on RemoteException catch (e) {
+        log('wake via Cast falhou: ${e.message}');
+      }
+    }
+    final bt = _bluetooth;
+    if (bt != null) {
+      try {
+        await bt.wakeUp();
+        log('wake: Power enviado por Bluetooth');
+        fired = true;
+      } on RemoteException catch (e) {
+        log('wake via Bluetooth falhou: ${e.message}');
+      } catch (e) {
+        log('wake via Bluetooth falhou: $e');
+      }
+    }
+    if (!fired) return false;
     final ok = await _awaitService(timeout);
     if (ok) {
       _socket?.add(RemoteMessages.keyInject(androidTvKeyCodes[RemoteKey.home]!, RemoteMessages.directionShort));
-      log('acordou via Cast; HOME enviado');
+      log('acordou; HOME enviado');
     }
     await _cast?.disconnect();
     return ok;
@@ -400,16 +437,16 @@ class AndroidTvController extends BaseRemoteController {
       try {
         await ensureConnected();
       } on RemoteException {
-        // Cascata: porta de repouso (Cast) → Wake-on-LAN (com MAC) → aviso.
-        // Acordou: não enviar Power (desligaria de novo).
+        // Cascata Wake-on-LAN → Cast → Bluetooth. Acordou: não enviar Power
+        // (desligaria de novo).
         if (await wakeFromStandby()) return;
-        if (device.macAddress != null) {
-          if (await wake()) return;
-          throw const ConnectionException('Aparelho não respondeu ao Wake-on-LAN');
-        }
-        throw const ConnectionException(
-          'Aparelho fora do alcance da rede. Ative "Standby em rede" nas configurações de energia '
-          'ou informe o MAC em Meus dispositivos para ligar por Wake-on-LAN.',
+        throw ConnectionException(
+          _bluetooth != null || device.macAddress != null
+              ? 'A TV não acordou. Confira se ela está ligada na tomada e, se o problema persistir, '
+                    'ative "Standby em rede" nas configurações de energia dela.'
+              : 'A TV está em repouso com o Wi-Fi desligado. Para ligá-la pelo celular: ative "Standby em rede" '
+                    'nas configurações de energia da TV, ou vincule o celular por Bluetooth em Meus dispositivos '
+                    '(Android), ou informe o MAC para Wake-on-LAN.',
         );
       }
     }

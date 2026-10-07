@@ -413,6 +413,37 @@ void main() {
       expect(server.keyInjects.map((k) => k.$1), isNot(contains(26)), reason: 'Power desligaria de novo');
     });
 
+    test('Power com Wi-Fi da TV desligado acorda pelo Bluetooth quando o Cast falha', () async {
+      final server = FakeRemoteServer(tv, trustedClientPem: client.certificatePem)..dropFirstConnections = 1 << 30;
+      await server.start();
+      addTearDown(server.close);
+      final dev = device(port: server.port);
+      final cast = _WakingController(dev, onWake: () => throw const ConnectionException('Cast fora'));
+      final bt = _FakeWaker(onWake: () => server.dropFirstConnections = 0);
+      final c = AndroidTvController(
+        dev,
+        client,
+        TlsTrust(deviceId: dev.id, store: MemoryPinStore()),
+        cast: cast,
+        bluetooth: bt,
+      );
+      addTearDown(c.dispose);
+      expect(c.capabilities, contains(RemoteCapability.wakeOnLan));
+      await c.sendKey(RemoteKey.power);
+      expect(bt.woke, isTrue);
+      expect(c.currentState, DeviceConnectionState.connected);
+    });
+
+    test('Power sem nenhum canal de despertar explica as opções', () async {
+      final dev = device(port: 1);
+      final c = AndroidTvController(dev, client, TlsTrust(deviceId: dev.id, store: MemoryPinStore()));
+      addTearDown(c.dispose);
+      await expectLater(
+        c.sendKey(RemoteKey.power),
+        throwsA(isA<ConnectionException>().having((e) => e.message, 'message', contains('Bluetooth'))),
+      );
+    });
+
     test('Power com MAC e aparelho inacessível tenta Wake-on-LAN', () async {
       const dev = RemoteDevice(
         id: 'dev-1',
@@ -466,6 +497,17 @@ class X509CertificateFake implements X509Certificate {
 }
 
 /// Controlador que só registra teclas (simula o Cast).
+class _FakeWaker implements WakeSource {
+  _FakeWaker({required this.onWake});
+  final void Function() onWake;
+  bool woke = false;
+  @override
+  Future<void> wakeUp() async {
+    woke = true;
+    onWake();
+  }
+}
+
 class _WakingController extends _RecordingController implements WakeSource {
   _WakingController(super.device, {required this.onWake});
   final void Function() onWake;

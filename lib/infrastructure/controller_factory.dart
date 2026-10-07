@@ -8,7 +8,9 @@ import 'net/tls_trust.dart';
 import 'protocols/android_tv/android_tv_certificate.dart';
 import 'protocols/android_tv/android_tv_controller.dart';
 import 'protocols/android_tv/android_tv_pairing.dart';
+import 'protocols/bluetooth_hid/bluetooth_hid_channel.dart';
 import 'protocols/bluetooth_hid/bluetooth_hid_controller.dart';
+import 'protocols/bluetooth_hid/bluetooth_hid_waker.dart';
 import 'protocols/cast/cast_controller.dart';
 import 'protocols/lg/lg_controller.dart';
 import 'protocols/philips/philips_controller.dart';
@@ -20,10 +22,14 @@ import 'protocols/vizio/vizio_controller.dart';
 /// Monta o adapter concreto para cada protocolo, injetando credenciais e a
 /// política de confiança TLS do dispositivo.
 class ControllerFactory {
-  ControllerFactory({required this.credentials, required this.pins});
+  ControllerFactory({required this.credentials, required this.pins, BluetoothHidChannel? bluetooth})
+    : _bluetooth = bluetooth; // ignore: prefer_initializing_formals
 
   final CredentialStore credentials;
   final CertificatePinStore pins;
+
+  /// Canal HID Bluetooth (Android); `null` em plataformas sem suporte.
+  final BluetoothHidChannel? _bluetooth;
 
   /// Chave (no CredentialStore) da identidade única do app para Android TV.
   static const appIdentityKey = 'app:android-tv-identity';
@@ -63,6 +69,9 @@ class ControllerFactory {
         ClientIdentity.fromCredentials(creds),
         _trust(d),
         cast: CastController(_castTwin(d), _trust(_castTwin(d))),
+        bluetooth: d.bluetoothAddress != null && (_bluetooth?.isPlatformSupported ?? false)
+            ? BluetoothHidWaker(d.bluetoothAddress!, channel: _bluetooth!)
+            : null,
       ),
       RemoteProtocol.cast => CastController(d, _trust(d)),
       RemoteProtocol.samsungTizen => SamsungController(d, creds?['token'], _trust(d)),

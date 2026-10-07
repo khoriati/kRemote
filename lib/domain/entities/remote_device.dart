@@ -66,6 +66,7 @@ class RemoteDevice {
     this.pairingPort,
     this.volumeViaCast = false,
     this.serviceName,
+    this.bluetoothAddress,
   });
 
   final String id;
@@ -87,6 +88,11 @@ class RemoteDevice {
   /// app Google Home.
   final bool volumeViaCast;
 
+  /// Endereço Bluetooth da TV, quando o celular foi pareado a ela como
+  /// teclado HID. Permite ligá-la mesmo com o Wi-Fi desligado em repouso
+  /// (somente Android, que pode atuar como periférico HID).
+  final String? bluetoothAddress;
+
   /// Nome da instância mDNS/SSDP com que o aparelho foi descoberto. É a
   /// identidade estável usada para reencontrá-lo quando o IP muda (roteador
   /// reiniciado, troca de Wi-Fi). `null` para cadastro manual por IP.
@@ -102,6 +108,8 @@ class RemoteDevice {
     int? pairingPort,
     bool? volumeViaCast,
     String? serviceName,
+    String? bluetoothAddress,
+    bool clearBluetooth = false,
   }) => RemoteDevice(
     id: id,
     name: name ?? this.name,
@@ -113,6 +121,7 @@ class RemoteDevice {
     pairingPort: pairingPort ?? this.pairingPort,
     volumeViaCast: volumeViaCast ?? this.volumeViaCast,
     serviceName: serviceName ?? this.serviceName,
+    bluetoothAddress: clearBluetooth ? null : (bluetoothAddress ?? this.bluetoothAddress),
   );
 
   Map<String, dynamic> toJson() => {
@@ -126,6 +135,7 @@ class RemoteDevice {
     'pairingPort': pairingPort,
     'volumeViaCast': volumeViaCast,
     'serviceName': serviceName,
+    'bluetoothAddress': bluetoothAddress,
   };
 
   factory RemoteDevice.fromJson(Map<String, dynamic> json) => RemoteDevice(
@@ -139,6 +149,7 @@ class RemoteDevice {
     pairingPort: json['pairingPort'] as int?,
     volumeViaCast: json['volumeViaCast'] as bool? ?? false,
     serviceName: json['serviceName'] as String?,
+    bluetoothAddress: json['bluetoothAddress'] as String?,
   );
 
   @override

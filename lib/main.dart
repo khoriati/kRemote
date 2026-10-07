@@ -26,7 +26,8 @@ Future<void> main() async {
   await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp, DeviceOrientation.portraitDown]);
 
   final secure = SecureCredentialStore();
-  final factory = ControllerFactory(credentials: secure, pins: secure.pins);
+  const bluetooth = BluetoothHidChannel();
+  final factory = ControllerFactory(credentials: secure, pins: secure.pins, bluetooth: bluetooth);
   final scanner = NetworkScanner(CompositeDiscovery([MdnsDiscovery(), SsdpDiscovery()]));
   final devices = DeviceService(
     repository: PrefsDeviceRepository(),
@@ -51,12 +52,6 @@ Future<void> main() async {
   await Future.wait([devices.load(), settings.load()]);
 
   runApp(
-    AppScope(
-      devices: devices,
-      settings: settings,
-      scanner: scanner,
-      bluetooth: const BluetoothHidChannel(),
-      child: const KRemoteApp(),
-    ),
+    AppScope(devices: devices, settings: settings, scanner: scanner, bluetooth: bluetooth, child: const KRemoteApp()),
   );
 }
