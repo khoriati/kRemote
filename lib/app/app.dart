@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 
-import '../presentation/screens/remote_screen.dart';
+import '../presentation/screens/home_screen.dart';
 import 'app_scope.dart';
 import 'theme.dart';
 
@@ -30,7 +30,7 @@ class KRemoteApp extends StatelessWidget {
           locale: const Locale('pt', 'BR'),
           localizationsDelegates: GlobalMaterialLocalizations.delegates,
           supportedLocales: const [Locale('pt', 'BR'), Locale('en')],
-          home: const RemoteScreen(),
+          home: const HomeScreen(),
         );
       },
     );
