@@ -26,6 +26,12 @@ void main() {
       expect(back.model, 'Chromecast');
       expect(back.macAddress, 'AA:BB:CC:DD:EE:FF');
       expect(back.pairingPort, 6467);
+      expect(back.lastConnectedAt, isNull);
+      final proven = d.copyWith(lastConnectedAt: DateTime(2026, 10, 18, 12));
+      final provenBack = RemoteDevice.fromJson(proven.toJson());
+      expect(provenBack.lastConnectedAt, DateTime(2026, 10, 18, 12));
+      expect(provenBack.everConnected, isTrue);
+      expect(provenBack.copyWith(clearLastConnected: true).everConnected, isFalse);
     });
 
     test('igualdade por id', () {

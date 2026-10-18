@@ -6,6 +6,7 @@ import '../../../domain/entities/app_shortcut.dart';
 import '../../../domain/entities/connection_state.dart';
 import '../../../domain/entities/remote_key.dart';
 import '../../../domain/errors.dart';
+import '../../net/wake_on_lan.dart';
 import '../base_controller.dart';
 
 /// Teclas do Roku External Control Protocol.
@@ -57,7 +58,11 @@ class RokuController extends BaseRemoteController {
   @override
   Set<RemoteKey> get supportedKeys => rokuKeys.keys.toSet();
   @override
-  Set<RemoteCapability> get capabilities => const {RemoteCapability.textInput, RemoteCapability.appLaunch};
+  Set<RemoteCapability> get capabilities => {
+    RemoteCapability.textInput,
+    RemoteCapability.appLaunch,
+    if (device.macAddress != null) RemoteCapability.wakeOnLan,
+  };
 
   @override
   Future<void> connect() async {
@@ -83,6 +88,17 @@ class RokuController extends BaseRemoteController {
   @override
   Future<void> sendKey(RemoteKey key, {KeyPress press = KeyPress.short}) async {
     final name = rokuKeys[key] ?? unsupported(key);
+    if (key == RemoteKey.power && currentState != DeviceConnectionState.connected) {
+      // Roku TV desligada: WoL (com MAC) e, se o ECP ainda responder
+      // ("início rápido"), o comando explícito de ligar.
+      if (device.macAddress != null) await const WakeOnLan().wake(device.macAddress!, host: device.host);
+      try {
+        await _post('/keypress/PowerOn');
+      } catch (_) {
+        if (device.macAddress == null) rethrow;
+      }
+      return;
+    }
     await ensureConnected();
     final verb = switch (press) {
       KeyPress.short => 'keypress',

@@ -81,7 +81,7 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
   Widget _buildBody(BuildContext context, ColorScheme cs, AppScope scope) {
     final svc = scope.devices;
     final scanner = scope.scanner;
-    final scanning = scanner.scanning;
+    final scanning = scanner.scanning || scanner.deepScanning;
     final all = scanner.found;
     final atvHosts = all.where((d) => d.protocol == RemoteProtocol.androidTv).map((d) => d.host).toSet();
     final castModelByHost = {
@@ -114,7 +114,8 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
             Padding(
               padding: const EdgeInsets.symmetric(vertical: 16),
               child: Text(
-                'Nenhum aparelho encontrado. Confira se o celular está no mesmo Wi-Fi da TV ou adicione pelo IP abaixo.',
+                'Nenhum aparelho encontrado. Confira se o celular está no mesmo Wi-Fi da TV, '
+                'varra toda a rede ou adicione pelo IP abaixo.',
                 style: TextStyle(color: cs.onSurfaceVariant),
               ),
             ),
@@ -135,12 +136,32 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
                 onTap: svc.findRegistered(d) != null ? null : () => _add(_withModel(d, castModelByHost).toDevice()),
               ),
             ),
+          if (scanner.canScanDeep)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: OutlinedButton.icon(
+                onPressed: scanner.deepScanning ? null : () => scanner.scanDeep(),
+                icon: scanner.deepScanning
+                    ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                    : const Icon(Icons.radar),
+                label: Text(scanner.deepScanning ? 'Varrendo a rede…' : 'Varrer toda a rede'),
+              ),
+            ),
+          if (scanner.canScanDeep)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(4, 6, 4, 0),
+              child: Text(
+                'Testa as portas de Samsung, LG, Roku, Sony, Philips, Vizio e Google TV em todos os IPs da rede. '
+                'Leva cerca de um minuto; útil quando a TV não se anuncia (iPhone, Wi-Fi com isolamento).',
+                style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant),
+              ),
+            ),
           const SizedBox(height: 16),
           const _SectionHeader(title: 'Adicionar por IP'),
           Card(
             child: Padding(
               padding: const EdgeInsets.all(16),
-              child: _ManualForm(onSubmit: _add),
+              child: _ManualForm(onSubmit: _add, identify: scanner.canIdentify ? scanner.identify : null),
             ),
           ),
           if (Platform.isAndroid) ...[
@@ -228,8 +249,11 @@ class _SectionHeader extends StatelessWidget {
 }
 
 class _ManualForm extends StatefulWidget {
-  const _ManualForm({required this.onSubmit});
+  const _ManualForm({required this.onSubmit, this.identify});
   final Future<void> Function(RemoteDevice) onSubmit;
+
+  /// Sonda o host e devolve o protocolo/nome/MAC detectados (opcional).
+  final Future<DiscoveredDevice?> Function(String host)? identify;
 
   @override
   State<_ManualForm> createState() => _ManualFormState();
@@ -242,11 +266,41 @@ class _ManualFormState extends State<_ManualForm> {
   final _port = TextEditingController();
   final _mac = TextEditingController();
   RemoteProtocol _protocol = RemoteProtocol.androidTv;
+  bool _detecting = false;
+  String? _detectMessage;
 
   @override
   void initState() {
     super.initState();
     _port.text = '${_protocol.defaultPort}';
+  }
+
+  /// Sonda o IP digitado e preenche tipo, porta, nome, modelo e MAC.
+  Future<void> _detect() async {
+    final identify = widget.identify;
+    final host = _host.text.trim();
+    if (identify == null || !isValidHost(host)) {
+      setState(() => _detectMessage = 'Digite um IP ou host válido');
+      return;
+    }
+    setState(() {
+      _detecting = true;
+      _detectMessage = null;
+    });
+    final d = await identify(host);
+    if (!mounted) return;
+    setState(() {
+      _detecting = false;
+      if (d == null) {
+        _detectMessage = 'Nenhum protocolo suportado respondeu nesse endereço. Confira se a TV está ligada.';
+        return;
+      }
+      _protocol = d.protocol;
+      _port.text = '${d.port}';
+      if (_name.text.trim().isEmpty) _name.text = d.name;
+      if (d.macAddress != null) _mac.text = d.macAddress!;
+      _detectMessage = 'Detectado: ${d.protocol.label}${d.model != null ? ' · ${d.model}' : ''}';
+    });
   }
 
   @override
@@ -262,6 +316,8 @@ class _ManualFormState extends State<_ManualForm> {
     RemoteProtocol.samsungTizen,
     RemoteProtocol.lgWebOs,
     RemoteProtocol.sonyBravia,
+    RemoteProtocol.philipsJointSpace,
+    RemoteProtocol.roku,
   }.contains(_protocol);
 
   void _submit() {
@@ -327,7 +383,21 @@ class _ManualFormState extends State<_ManualForm> {
                 flex: 3,
                 child: TextFormField(
                   controller: _host,
-                  decoration: const InputDecoration(labelText: 'IP ou host'),
+                  decoration: InputDecoration(
+                    labelText: 'IP ou host',
+                    suffixIcon: widget.identify == null
+                        ? null
+                        : _detecting
+                        ? const Padding(
+                            padding: EdgeInsets.all(12),
+                            child: SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
+                          )
+                        : IconButton(
+                            tooltip: 'Detectar tipo de aparelho',
+                            icon: const Icon(Icons.search),
+                            onPressed: _detect,
+                          ),
+                  ),
                   keyboardType: TextInputType.url,
                   autocorrect: false,
                   validator: (v) => isValidHost(v ?? '') ? null : 'Endereço inválido',
@@ -347,6 +417,14 @@ class _ManualFormState extends State<_ManualForm> {
               ),
             ],
           ),
+          if (_detectMessage != null)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(4, 6, 4, 0),
+              child: Text(
+                _detectMessage!,
+                style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.onSurfaceVariant),
+              ),
+            ),
           if (_wantsMac) ...[
             const SizedBox(height: 12),
             TextFormField(

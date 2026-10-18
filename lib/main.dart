@@ -12,8 +12,10 @@ import 'application/network_scanner.dart';
 import 'application/settings_service.dart';
 import 'infrastructure/controller_factory.dart';
 import 'infrastructure/discovery/composite_discovery.dart';
+import 'infrastructure/discovery/host_probe.dart';
 import 'infrastructure/discovery/mdns_discovery.dart';
 import 'infrastructure/discovery/ssdp_discovery.dart';
+import 'infrastructure/discovery/subnet_sweep_discovery.dart';
 import 'infrastructure/net/log.dart';
 import 'infrastructure/net/tls_fingerprint.dart';
 import 'infrastructure/protocols/bluetooth_hid/bluetooth_hid_channel.dart';
@@ -28,7 +30,12 @@ Future<void> main() async {
   final secure = SecureCredentialStore();
   const bluetooth = BluetoothHidChannel();
   final factory = ControllerFactory(credentials: secure, pins: secure.pins, bluetooth: bluetooth);
-  final scanner = NetworkScanner(CompositeDiscovery([MdnsDiscovery(), SsdpDiscovery()]));
+  final probe = HostProbe();
+  final scanner = NetworkScanner(
+    CompositeDiscovery([MdnsDiscovery(probe: probe), SsdpDiscovery(probe: probe)]),
+    deep: SubnetSweepDiscovery(probe: probe),
+    identifier: probe,
+  );
   final devices = DeviceService(
     repository: PrefsDeviceRepository(),
     credentials: secure,

@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 
 import '../domain/entities/remote_device.dart';
 import '../domain/ports/device_discovery.dart';
+import '../domain/ports/device_identifier.dart';
 import '../infrastructure/net/log.dart';
 
 /// Busca de aparelhos na rede compartilhada por toda a UI.
@@ -13,26 +14,38 @@ import '../infrastructure/net/log.dart';
 /// - Enquanto houver observadores ([watch]), repete a varredura a cada
 ///   [interval] e descarta aparelhos que não são vistos há [staleAfter]:
 ///   é o *heartbeat* da lista de disponíveis.
+/// - [scanDeep] roda a descoberta profunda (varredura de sub-rede), só a
+///   pedido do usuário; os achados entram na mesma lista.
+/// - [identify] sonda um host digitado e diz qual protocolo ele fala.
 class NetworkScanner extends ChangeNotifier {
   NetworkScanner(
     this._discovery, {
+    DeviceDiscovery? deep,
+    DeviceIdentifier? identifier,
     this.interval = const Duration(seconds: 10),
     this.scanTimeout = const Duration(seconds: 6),
     this.staleAfter = const Duration(seconds: 25),
-  });
+  }) : _deep = deep, // ignore: prefer_initializing_formals
+       _identifier = identifier; // ignore: prefer_initializing_formals
 
   final DeviceDiscovery _discovery;
+  final DeviceDiscovery? _deep;
+  final DeviceIdentifier? _identifier;
   final Duration interval;
   final Duration scanTimeout;
   final Duration staleAfter;
 
   final Map<String, ({DiscoveredDevice device, DateTime seen})> _found = {};
   Future<List<DiscoveredDevice>>? _running;
+  Future<List<DiscoveredDevice>>? _runningDeep;
   Timer? _timer;
   int _watchers = 0;
   DateTime? _lastScan;
 
   bool get scanning => _running != null;
+  bool get deepScanning => _runningDeep != null;
+  bool get canScanDeep => _deep != null;
+  bool get canIdentify => _identifier != null;
   DateTime? get lastScan => _lastScan;
 
   /// Aparelhos vistos recentemente (Android TV primeiro, depois por nome).
@@ -60,7 +73,7 @@ class NetworkScanner extends ChangeNotifier {
   Future<List<DiscoveredDevice>> scan({Duration? timeout}) {
     final inFlight = _running;
     if (inFlight != null) return inFlight;
-    final f = _run(timeout ?? scanTimeout).whenComplete(() {
+    final f = _run(_discovery, timeout ?? scanTimeout).whenComplete(() {
       _running = null;
       _lastScan = DateTime.now();
       notifyListeners();
@@ -70,10 +83,41 @@ class NetworkScanner extends ChangeNotifier {
     return f;
   }
 
-  Future<List<DiscoveredDevice>> _run(Duration timeout) async {
+  /// Varredura profunda (sub-rede), a pedido. Aparelhos achados aqui ficam
+  /// na lista por [staleAfter] como os demais; o heartbeat normal os
+  /// mantém se responderem ao mDNS/SSDP.
+  Future<List<DiscoveredDevice>> scanDeep() {
+    final deep = _deep;
+    if (deep == null) return scan();
+    final inFlight = _runningDeep;
+    if (inFlight != null) return inFlight;
+    final f = _run(deep, scanTimeout).whenComplete(() {
+      _runningDeep = null;
+      notifyListeners();
+    });
+    _runningDeep = f;
+    notifyListeners();
+    return f;
+  }
+
+  /// Identifica o protocolo de um host (cadastro por IP); `null` se nada
+  /// suportado respondeu ou se não há identificador configurado.
+  Future<DiscoveredDevice?> identify(String host) async {
+    final id = _identifier;
+    if (id == null) return null;
+    final d = (await id.identify(host))?.normalized();
+    if (d != null) {
+      _found[d.key] = (device: d, seen: DateTime.now());
+      notifyListeners();
+    }
+    return d;
+  }
+
+  Future<List<DiscoveredDevice>> _run(DeviceDiscovery discovery, Duration timeout) async {
     var changed = false;
     try {
-      await for (final d in _discovery.discover(timeout: timeout)) {
+      await for (final raw in discovery.discover(timeout: timeout)) {
+        final d = raw.normalized();
         final prev = _found[d.key];
         _found[d.key] = (device: d, seen: DateTime.now());
         if (prev == null) {

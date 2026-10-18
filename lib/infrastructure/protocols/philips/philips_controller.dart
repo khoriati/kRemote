@@ -6,6 +6,7 @@ import 'package:http/http.dart' as http;
 import '../../../domain/entities/connection_state.dart';
 import '../../../domain/entities/remote_key.dart';
 import '../../../domain/errors.dart';
+import '../../net/wake_on_lan.dart';
 import '../base_controller.dart';
 
 /// Teclas JointSpace (Philips não-Android, API v1/v5, porta 1925).
@@ -70,7 +71,7 @@ class PhilipsController extends BaseRemoteController {
   @override
   Set<RemoteKey> get supportedKeys => philipsKeys.keys.toSet();
   @override
-  Set<RemoteCapability> get capabilities => const {};
+  Set<RemoteCapability> get capabilities => {if (device.macAddress != null) RemoteCapability.wakeOnLan};
 
   @override
   Future<void> connect() async {
@@ -100,6 +101,10 @@ class PhilipsController extends BaseRemoteController {
   Future<void> sendKey(RemoteKey key, {KeyPress press = KeyPress.short}) async {
     final name = philipsKeys[key] ?? unsupported(key);
     if (press == KeyPress.longEnd) return;
+    if (key == RemoteKey.power && currentState != DeviceConnectionState.connected && device.macAddress != null) {
+      await const WakeOnLan().wake(device.macAddress!, host: device.host);
+      return;
+    }
     await ensureConnected();
     final res = await _client
         .post(_uri('/input/key'), headers: {'Content-Type': 'application/json'}, body: jsonEncode({'key': name}))

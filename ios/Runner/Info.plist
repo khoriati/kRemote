@@ -38,7 +38,13 @@
 		<string>_androidtvremote2._tcp</string>
 		<string>_googlecast._tcp</string>
 		<string>_viziocast._tcp</string>
+		<string>_philipstv_rpc._tcp</string>
+		<string>_philipstv_s_rpc._tcp</string>
+		<string>_airplay._tcp</string>
+		<string>_hap._tcp</string>
 	</array>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>O microfone é usado só durante a busca por voz, e o áudio é enviado apenas à sua TV na rede local.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>O kRemote precisa acessar a rede local para encontrar e controlar sua TV, Chromecast e outros aparelhos.</string>
 	<key>UIApplicationSceneManifest</key>
