@@ -162,6 +162,7 @@ class AndroidTvPairingFlow implements PairingFlow {
     try {
       final identity = _identity ??= await (_identityProvider?.call() ?? ClientIdentity.generateAsync());
       if (_stage == PairingStage.failure) return; // cancelado durante a geração
+      KLog.d('atv-pairing', 'identidade ${identity.shortFingerprint}');
       _emit(PairingStage.connecting, 'Conectando à TV…');
       await trust.load();
       final ctx = SecurityContext(withTrustedRoots: false)

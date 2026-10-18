@@ -6,8 +6,12 @@ Chromecast clássico, além de Samsung, LG, Roku, Sony Bravia, Philips JointSpac
 Vizio. No Android, também transforma o celular em **teclado Bluetooth** para
 comandar apresentações e volume em PC/Mac.
 
-Vários aparelhos da casa ficam cadastrados ao mesmo tempo; a troca é feita no
-seletor do topo da tela, com um controlador vivo por aparelho.
+Vários aparelhos da casa ficam cadastrados ao mesmo tempo. A **tela inicial**
+lista-os como botões, com a presença verificada em tempo real e ordenados por
+disponibilidade (ligados, em repouso, verificando, fora da rede); novos
+aparelhos vistos na rede aparecem logo abaixo para cadastro em um toque. O
+controle abre ao escolher o aparelho, e a troca rápida continua no seletor do
+topo, com um controlador vivo por aparelho.
 
 ## Protocolos suportados
 
@@ -25,6 +29,65 @@ seletor do topo da tela, com um controlador vivo por aparelho.
 
 TVs Philips **com Google TV** devem ser adicionadas como *Google TV / Android TV*
 (o app já as descobre assim); JointSpace é só para Philips sem Android.
+
+### Marcas e como cada uma é controlada
+
+A tabela abaixo é mantida em código em
+`lib/infrastructure/discovery/brand_catalog.dart` (`BrandCatalog.brands`):
+marca → protocolos candidatos em ordem de tentativa, mais os tipos mDNS,
+alvos SSDP e portas de assinatura de cada protocolo. Para suportar uma marca
+nova basta acrescentar linhas lá (e, para tipo mDNS novo, em
+`NSBonjourServices` no `Info.plist`).
+
+| Marca | Protocolo(s) | Observação |
+|---|---|---|
+| Samsung | Tizen (8002; 2016–2017 sem token: 8001 `ws://`) | 2011–2015 (porta 55000) não suportado |
+| LG | webOS (3000/3001) | NetCast (pré-2014) não suportado |
+| Sony | Android TV → IRCC | Bravia Android/Google TV pelo Android TV; demais por IRCC com PSK |
+| Philips / TP Vision | Android TV → JointSpace | JointSpace v1/v5/v6 em 1925 |
+| TCL / Semp | Android TV → Roku | linhas Google TV e Roku TV |
+| Philco | Android TV → Roku | Philco Google TV e Philco Roku TV; Linux antigo sem controle por rede |
+| AIWA, Britânia, JVC, Sharp | Android TV → Roku | |
+| Multilaser, Xiaomi, NVIDIA | Android TV | |
+| ViewSonic | Android TV → Cast | displays/projetores inteligentes |
+| Hisense | Android TV → Roku | VIDAA ainda não suportado |
+| Toshiba, Panasonic | Android TV | VIDAA / Fire TV / Viera ainda não suportados |
+| Roku, Insignia, onn., Hitachi, Element, Westinghouse | Roku | modelos Fire TV não suportados |
+| Vizio | SmartCast | |
+| Amazon Fire TV, Apple TV | — | roadmap |
+
+## Como os aparelhos são encontrados
+
+Quatro caminhos, todos alimentando a mesma lista (`NetworkScanner`):
+
+1. **mDNS direto** (`BrandCatalog.mdnsTypes`): `_androidtvremote2`,
+   `_googlecast`, `_viziocast`, `_philipstv_rpc`/`_philipstv_s_rpc`. O tipo
+   já diz o protocolo.
+2. **mDNS por pista** (`BrandCatalog.mdnsHintTypes`): `_airplay._tcp` e
+   `_hap._tcp` (HomeKit), que Samsung 2018+, LG 2019+, Sony, Roku, Vizio e
+   Philips anunciam. O TXT traz `manufacturer`/`model`/`deviceid`; a
+   `HostProbe` confirma o protocolo da marca e completa nome, modelo e MAC.
+   **É o caminho que faz Samsung/LG/Roku/Sony aparecerem no iPhone**, onde o
+   SSDP não funciona sem entitlement. Hardware Apple e acessórios HomeKit que
+   não são TV (categoria `ci`) são ignorados.
+3. **SSDP** (Android): alvos específicos das marcas mais `ssdp:all` e
+   `upnp:rootdevice`; respostas genéricas são classificadas pelos cabeçalhos
+   (`BrandCatalog.classifySsdp`) ou pelo `<manufacturer>` da descrição XML e
+   sondadas.
+4. **Varredura de sub-rede** (botão *Varrer toda a rede*): testa as portas de
+   assinatura (`BrandCatalog.signaturePorts`) em todos os IPs das redes /24 do
+   celular e confirma pela `HostProbe`. Não depende de anúncio nenhum; serve
+   para Wi-Fi com isolamento de multicast e firmwares que não se anunciam.
+
+No cadastro por IP, o botão **Detectar** roda a mesma sonda no endereço
+digitado e preenche tipo, porta, nome, modelo e MAC.
+
+A `HostProbe` confirma cada protocolo assim: Samsung `GET :8001/api/v2/`
+(nome, modelo, MAC, `TokenAuthSupport` → porta 8002 ou 8001); Roku
+`GET :8060/query/device-info` (fabricante, modelo, MAC); Philips
+`GET :1925/{6,5,1}/system`; Sony `POST /sony/system getInterfaceInformation`
+(sem PSK); LG portas 3000+3001 (ou só 3000 com marca conhecida); Android TV
+6466, Cast 8009 e Vizio 7345 por TCP.
 
 ## Conexão resiliente e presença na rede
 
@@ -62,14 +125,29 @@ IP, rede, nome amigável nem nome da instância mDNS. Regras:
   conseguir ler certificados, vale a heurística por `serviceName`/nome.
 - **Cadastro repetido**: adicionar um aparelho que já existe (mesma identidade,
   IP novo) atualiza o cadastro em vez de duplicar — credenciais preservadas.
-- **Socket fechado durante a conexão** não vira pedido de emparelhamento na
-  primeira vez: a TV também fecha a sessão ao acordar ou com a sessão antiga
-  viva, então o controlador tenta de novo (`connectAttempts`) antes de
-  concluir que o cliente não é reconhecido. Falhas TLS no meio de uma sessão
-  já estabelecida são queda de rede, não recusa.
-- **Recusa do certificado do celular** (`HandshakeException` ou alerta
-  `CERTIFICATE_UNKNOWN`, que chega como `TlsException`) durante a conexão é
-  "cliente não reconhecido" → emparelhar; só depois da segunda tentativa.
+- **Quando o app pede emparelhamento** (regra definitiva, a mesma da
+  implementação de referência `androidtvremote2`): só com **evidência TLS**
+  de recusa — alerta `CERTIFICATE_UNKNOWN`/`UNKNOWN_CA`/`BAD_CERTIFICATE`
+  durante a abertura (`AndroidTvController.isTlsRejection`), confirmado por
+  uma segunda tentativa 1,5 s depois. **Conexão fechada pela TV sem alerta**
+  (ao acordar, ao trocar de Wi-Fi, com a sessão anterior viva, app voltando
+  do segundo plano) é `ClosedDuringConnectException`: o controlador repete
+  por ~5 s (`retryDelays`) e, se persistir, é erro de conexão — **nunca**
+  reemparelhamento quando o emparelhamento atual já produziu uma sessão
+  (`RemoteDevice.lastConnectedAt`, gravado na primeira sessão e apagado ao
+  reemparelhar). Só um cadastro que **nunca** conectou e fecha sempre cai em
+  "emparelhar" (primeiro uso). Falhas TLS com a sessão já estabelecida são
+  queda de rede, não recusa.
+- **Recusa confirmada tenta a identidade do app antes de emparelhar**:
+  cadastros antigos guardam a identidade com que foram emparelhados; se a TV
+  a recusa (alerta TLS) mas já conhece a identidade única do app (outro
+  cadastro da mesma TV, ou emparelhamento mais recente), a sessão sobe com
+  ela e as credenciais do cadastro são regravadas (`fallbackIdentity`,
+  `onIdentityUpgraded`). O log mostra a impressão digital usada em cada
+  conexão e no emparelhamento, para comparar quando a TV recusar.
+- **Certificado válido desde um ano atrás**: TV recém-ligada com relógio
+  ainda não sincronizado recusaria, com `CERTIFICATE_UNKNOWN`, um certificado
+  "ainda não válido"; `notBefore` fica no passado e a validade é de 10 anos.
 - **Nome de cliente único por celular** no emparelhamento (`kRemote (<host>)`
   ou `kRemote <SO> <sufixo>`): a TV lista os controles por esse nome e dois
   aparelhos chamados só "kRemote" podem substituir o emparelhamento um do outro.
@@ -104,11 +182,24 @@ em três estados (`Presence`): ligado, em repouso, fora da rede.
 
 ## Teclado
 
-O painel *Números* tem os modos **123** e **ABC**: letras, espaço, apagar e
-Enter são enviados como teclas (`KEYCODE_A`…`Z`, `KEYCODE_SPACE`) pelo mesmo
-caminho dos dígitos, que funciona em qualquer campo da TV. O botão de
-microfone envia `KEYCODE_ASSIST`, que só ativa o Assistente na TV; o áudio do
-celular **não** é transmitido.
+O painel *Números* envia dígitos, traço, apagar e Enter como teclas
+(`KEYCODE_0`…`9`), que funcionam em qualquer tela da TV. Texto livre vai
+pelo botão de texto (canal IME do Android TV / `sendText` dos demais
+protocolos).
+
+## Busca por voz (Google TV / Android TV)
+
+O botão de microfone faz busca por voz de verdade pelo protocolo, como o app
+Google TV: envia `KEYCODE_SEARCH`, a TV abre a escuta e responde
+`RemoteVoiceBegin{session_id}`; o app ecoa o begin e transmite o microfone
+em `RemoteVoicePayload` (PCM 16 bits, mono, 8 kHz, blocos de 20 KiB — blocos
+menores são ignorados por algumas TVs) até o segundo toque, até a TV encerrar
+(`RemoteVoiceEnd`, ao detectar silêncio) ou até 15 s; o último bloco é
+preenchido com silêncio e segue `RemoteVoiceEnd`. O microfone é capturado a
+16 kHz pelo pacote `record` e reduzido à metade por média de pares
+(`MicrophoneVoiceSource`). O áudio só é capturado durante a escuta e só vai
+para a TV na rede local (`NSMicrophoneUsageDescription`, `RECORD_AUDIO`). Em
+outros protocolos o botão continua enviando a tecla de assistente.
 
 ## Ícone do app
 
@@ -167,7 +258,8 @@ Projetado para passar em análise estática (SAST) e revisão de arquitetura:
   `network_security_config.xml`; no iOS usa-se `NSAllowsLocalNetworking`,
   não `NSAllowsArbitraryLoads`.
 - **Dependências mínimas**: `basic_utils`/`pointycastle` (certificado RSA),
-  `crypto`, `http`, `nsd`, `shared_preferences`, `flutter_secure_storage`.
+  `crypto`, `http`, `nsd`, `shared_preferences`, `flutter_secure_storage`,
+  `record` (microfone para busca por voz).
 - Builds release com `--obfuscate` e `--split-debug-info` (ver `scripts/`).
 
 Consulte `SECURITY.md` para o modelo de ameaças e como reportar.
@@ -177,15 +269,18 @@ Consulte `SECURITY.md` para o modelo de ameaças e como reportar.
 ### iOS (iPhone 14 testado)
 Já configurado em `ios/Runner/Info.plist`:
 - `NSLocalNetworkUsageDescription` e `NSBonjourServices`
-  (`_androidtvremote2._tcp`, `_googlecast._tcp`, `_viziocast._tcp`) — a
-  descoberta usa Bonjour nativo e **não** exige a entitlement de multicast.
+  (`_androidtvremote2._tcp`, `_googlecast._tcp`, `_viziocast._tcp`,
+  `_philipstv_rpc._tcp`, `_philipstv_s_rpc._tcp`, `_airplay._tcp`,
+  `_hap._tcp`) — a descoberta usa Bonjour nativo e **não** exige a
+  entitlement de multicast.
 - `NSAppTransportSecurity › NSAllowsLocalNetworking`.
 - Orientação retrato; `ITSAppUsesNonExemptEncryption = false`.
 
-Limitações do iOS: SSDP (Samsung/LG/Roku/Sony/Philips) depende de UDP multicast
-e requer a entitlement `com.apple.developer.networking.multicast` (aprovação da
-Apple); sem ela, adicione esses aparelhos por IP. Teclado Bluetooth HID não é
-permitido pela Apple e fica oculto.
+Limitações do iOS: SSDP depende de UDP multicast e requer a entitlement
+`com.apple.developer.networking.multicast` (aprovação da Apple). Sem ela,
+Samsung/LG/Roku/Sony/Philips são encontrados pelos anúncios AirPlay/HomeKit
+(mDNS), pela varredura de sub-rede ou por IP com *Detectar*. Teclado
+Bluetooth HID não é permitido pela Apple e fica oculto.
 
 Primeira execução: `scripts/build-ios.sh setup` (Xcode para escolher a
 equipe de assinatura), depois `scripts/build-ios.sh run`.
@@ -219,7 +314,9 @@ scripts/check.sh
 A suíte cobre o codec protobuf, geração de certificado (aceito pelo
 `SecurityContext`), cálculo do segredo de emparelhamento, mapas de teclas de
 todos os protocolos, `TlsTrust`, Wake-on-LAN, validação de entrada, o serviço de
-dispositivos e widgets (D-pad, temas, troca de aparelho). O caminho crítico
+dispositivos, widgets (D-pad, temas, troca de aparelho) e a descoberta
+multimarcas (`BrandCatalog`, `HostProbe` com HTTP falso por marca,
+classificação SSDP, varredura de sub-rede e identificação por IP). O caminho crítico
 Android TV é exercitado **ponta a ponta** contra servidores falsos com TLS mútuo
 (`test/support/fake_android_tv.dart`): emparelhamento completo com PIN,
 rejeição de PIN errado, detecção de certificado alterado, handshake

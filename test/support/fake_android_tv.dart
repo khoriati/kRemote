@@ -125,6 +125,13 @@ class FakeRemoteServer {
   final imeEdits = <(int, int, String)>[];
   SecureSocket? _client;
 
+  /// Voz: sessão aberta ao receber KEYCODE_SEARCH (84), payloads e fins recebidos.
+  int voiceSessionId = 5;
+  bool voiceEnabled = true;
+  final voiceBegins = <int>[];
+  final voicePayloads = <(int, Uint8List)>[];
+  final voiceEnds = <int>[];
+
   /// Quantas conexões iniciais a "TV" fecha logo após o handshake, sem
   /// mensagem (como faz ao acordar ou com a sessão anterior ainda viva).
   int dropFirstConnections = 0;
@@ -203,6 +210,23 @@ class FakeRemoteServer {
         } else if (m.containsKey(10)) {
           final k = m[10]!.asMessage.readAll();
           keyInjects.add((k[1]!.asInt, k[2]!.asInt));
+          if (k[1]!.asInt == 84 && voiceEnabled) {
+            socket.add(
+              _msg(
+                30,
+                ProtoWriter()
+                  ..int32(1, voiceSessionId)
+                  ..string(2, 'com.google.android.katniss'),
+              ),
+            );
+          }
+        } else if (m.containsKey(30)) {
+          voiceBegins.add(m[30]!.asMessage.readAll()[1]!.asInt);
+        } else if (m.containsKey(31)) {
+          final v = m[31]!.asMessage.readAll();
+          voicePayloads.add((v[1]!.asInt, v[2]!.asBytes));
+        } else if (m.containsKey(32)) {
+          voiceEnds.add(m[32]!.asMessage.readAll()[1]!.asInt);
         } else if (m.containsKey(90)) {
           final link = m[90]!.asMessage.readAll()[1]!.asString;
           appLinks.add(link);

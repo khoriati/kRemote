@@ -26,6 +26,16 @@ abstract class RemoteController {
   /// controle). Por padrão delega a [sendText].
   Future<void> sendChar(String ch) => sendText(ch);
 
+  /// Busca por voz (quando [RemoteCapability.voiceInput]): abre a escuta na
+  /// TV e transmite o microfone até [stopVoice], até a TV encerrar ou até o
+  /// tempo máximo.
+  Future<void> startVoice() async => throw UnsupportedError('startVoice');
+  Future<void> stopVoice() async {}
+
+  /// Está transmitindo voz agora? Mudanças em [listeningChanges].
+  bool get isListening => false;
+  Stream<bool> get listeningChanges => const Stream.empty();
+
   /// Abre um app (quando [RemoteCapability.appLaunch]).
   Future<void> launchApp(AppShortcut app) async => throw UnsupportedError('launchApp');
 

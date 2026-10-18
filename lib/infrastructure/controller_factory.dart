@@ -3,6 +3,7 @@ import '../domain/ports/certificate_pin_store.dart';
 import '../domain/ports/credential_store.dart';
 import '../domain/ports/pairing_flow.dart';
 import '../domain/ports/remote_controller.dart';
+import '../domain/ports/voice_source.dart';
 import 'net/log.dart';
 import 'net/tls_trust.dart';
 import 'protocols/android_tv/android_tv_certificate.dart';
@@ -18,12 +19,23 @@ import 'protocols/roku/roku_controller.dart';
 import 'protocols/samsung/samsung_controller.dart';
 import 'protocols/sony/sony_controller.dart';
 import 'protocols/vizio/vizio_controller.dart';
+import 'voice/microphone_voice_source.dart';
 
 /// Monta o adapter concreto para cada protocolo, injetando credenciais e a
 /// política de confiança TLS do dispositivo.
 class ControllerFactory {
-  ControllerFactory({required this.credentials, required this.pins, BluetoothHidChannel? bluetooth})
-    : _bluetooth = bluetooth; // ignore: prefer_initializing_formals
+  ControllerFactory({
+    required this.credentials,
+    required this.pins,
+    BluetoothHidChannel? bluetooth,
+    VoiceSource? Function()? voice,
+  }) : _bluetooth = bluetooth, // ignore: prefer_initializing_formals
+       _voiceFactory = voice;
+
+  /// Fonte de voz por controlador (microfone); `null` desliga a busca por voz
+  /// (ex.: testes). Por padrão, o microfone do celular.
+  final VoiceSource? Function()? _voiceFactory;
+  VoiceSource? get voiceSource => _voiceFactory == null ? MicrophoneVoiceSource() : _voiceFactory();
 
   final CredentialStore credentials;
   final CertificatePinStore pins;
@@ -68,6 +80,8 @@ class ControllerFactory {
         d,
         ClientIdentity.fromCredentials(creds),
         _trust(d),
+        fallbackIdentity: await appIdentity(),
+        voice: voiceSource,
         cast: CastController(_castTwin(d), _trust(_castTwin(d))),
         bluetooth: d.bluetoothAddress != null && (_bluetooth?.isPlatformSupported ?? false)
             ? BluetoothHidWaker(d.bluetoothAddress!, channel: _bluetooth!)

@@ -11,6 +11,14 @@ class ConnectionException extends RemoteException {
   const ConnectionException(super.message);
 }
 
+/// A TV fechou a conexão durante a abertura da sessão, sem alerta TLS.
+/// Transitório (TV acordando, rede trocada, sessão anterior viva); o
+/// controlador repete antes de desistir. Nunca é, por si só, "precisa
+/// emparelhar".
+class ClosedDuringConnectException extends ConnectionException {
+  const ClosedDuringConnectException(super.message);
+}
+
 class PairingException extends RemoteException {
   const PairingException(super.message);
 }

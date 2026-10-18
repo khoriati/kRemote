@@ -11,4 +11,4 @@ enum DeviceConnectionState { disconnected, connecting, connected, needsPairing, 
 enum Presence { online, standby, offline }
 
 /// Capacidades opcionais de um controlador.
-enum RemoteCapability { textInput, appLaunch, wakeOnLan, volumeLevel }
+enum RemoteCapability { textInput, appLaunch, wakeOnLan, volumeLevel, voiceInput }

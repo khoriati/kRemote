@@ -12,6 +12,7 @@ import '../domain/ports/credential_store.dart';
 import '../domain/ports/device_repository.dart';
 import '../domain/ports/pairing_flow.dart';
 import '../domain/ports/remote_controller.dart';
+import '../domain/xml_entities.dart';
 import '../infrastructure/controller_factory.dart';
 import '../infrastructure/net/log.dart';
 import '../infrastructure/protocols/android_tv/android_tv_controller.dart';
@@ -155,7 +156,10 @@ class DeviceService extends ChangeNotifier {
   /// do Android TV Remote (6466) é promovido a Google TV: o Chromecast com
   /// Google TV anuncia os dois serviços e só o Android TV dá controle completo.
   Future<RemoteDevice> add(RemoteDevice input) async {
-    var d = input;
+    var d = input.copyWith(
+      name: decodeXmlEntities(input.name),
+      model: input.model == null ? null : decodeXmlEntities(input.model!),
+    );
     if (d.protocol.isNetwork && !isValidHost(d.host)) throw const ConnectionException('Endereço inválido');
     if (d.macAddress != null && d.macAddress!.isNotEmpty && !isValidMac(d.macAddress!)) {
       throw const ConnectionException('MAC inválido');
@@ -231,7 +235,16 @@ class DeviceService extends ChangeNotifier {
     await _pins.delete(id);
     await _pins.delete('$id-cast');
     _paired[id] = false;
+    await _clearConnected(id);
     notifyListeners();
+  }
+
+  /// Novo emparelhamento ainda não comprovado por sessão.
+  Future<void> _clearConnected(String id) async {
+    final i = _devices.indexWhere((e) => e.id == id);
+    if (i < 0 || _devices[i].lastConnectedAt == null) return;
+    _devices[i] = _devices[i].copyWith(clearLastConnected: true);
+    await _repo.saveAll(_devices);
   }
 
   void setActive(String id) {
@@ -486,7 +499,39 @@ class DeviceService extends ChangeNotifier {
 
   /// Controlador do dispositivo (criado sob demanda e mantido vivo para
   /// alternância instantânea entre aparelhos).
-  Future<RemoteController> controller(RemoteDevice d) async => _controllers[d.id] ??= await _factory.create(d);
+  Future<RemoteController> controller(RemoteDevice d) async {
+    final existing = _controllers[d.id];
+    if (existing != null) return existing;
+    final c = await _factory.create(d);
+    _controllers[d.id] = c;
+    if (c is AndroidTvController) {
+      c.onFirstConnected = () => unawaited(_markConnected(d.id));
+      c.onIdentityUpgraded = (id) => unawaited(_creds.write(d.id, id.toCredentials()));
+      final own = c.identity;
+      final app = c.fallbackIdentity;
+      if (own != null && app != null && !own.sameAs(app)) {
+        KLog.d(
+          'devices',
+          '${d.name}: identidade do cadastro (${own.shortFingerprint}) difere da do app (${app.shortFingerprint})',
+        );
+      }
+    }
+    return c;
+  }
+
+  /// Registra que o emparelhamento atual já produziu uma sessão: a partir
+  /// daí, fechamentos sem alerta TLS nunca viram pedido de emparelhamento.
+  /// Grava sem descartar o controlador nem notificar (nada muda na UI).
+  Future<void> _markConnected(String id) async {
+    final i = _devices.indexWhere((e) => e.id == id);
+    if (i < 0) return;
+    final d = _devices[i];
+    final last = d.lastConnectedAt;
+    if (last != null && DateTime.now().difference(last) < const Duration(hours: 1)) return;
+    _devices[i] = d.copyWith(lastConnectedAt: DateTime.now());
+    KLog.d('devices', '${d.name}: sessão estabelecida; emparelhamento comprovado');
+    await _repo.saveAll(_devices);
+  }
 
   RemoteController? controllerIfCreated(RemoteDevice d) => _controllers[d.id];
 
@@ -508,6 +553,10 @@ class DeviceService extends ChangeNotifier {
 
   Future<void> launchApp(RemoteDevice d, AppShortcut app) async => (await controller(d)).launchApp(app);
 
+  Future<void> startVoice(RemoteDevice d) async => (await controller(d)).startVoice();
+
+  Future<void> stopVoice(RemoteDevice d) async => (await controller(d)).stopVoice();
+
   /// Inicia o emparelhamento; ao concluir, persiste credenciais e recria o
   /// controlador. Retorna `null` se o protocolo não exige emparelhamento.
   PairingFlow? startPairing(RemoteDevice d) {
@@ -521,6 +570,7 @@ class DeviceService extends ChangeNotifier {
       if (s.stage == PairingStage.success && flow.credentials != null) {
         await _creds.write(d.id, flow.credentials!);
         await _disposeController(d.id);
+        await _clearConnected(d.id);
         _paired[d.id] = true;
         KLog.d('devices', '${d.name}: credenciais gravadas, emparelhado');
         notifyListeners();

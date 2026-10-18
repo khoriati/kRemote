@@ -31,6 +31,7 @@ class RemoteScreen extends StatefulWidget {
 class _RemoteScreenState extends State<RemoteScreen> with WidgetsBindingObserver {
   RemoteController? _controller;
   StreamSubscription<DeviceConnectionState>? _sub;
+  StreamSubscription<bool>? _voiceSub;
   DeviceConnectionState _state = DeviceConnectionState.disconnected;
   String? _boundId;
   String? _boundHost;
@@ -54,6 +55,7 @@ class _RemoteScreenState extends State<RemoteScreen> with WidgetsBindingObserver
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _sub?.cancel();
+    _voiceSub?.cancel();
     super.dispose();
   }
 
@@ -108,6 +110,10 @@ class _RemoteScreenState extends State<RemoteScreen> with WidgetsBindingObserver
     setState(() => _controller = c);
     _sub = c.connectionState.listen((s) {
       if (mounted) setState(() => _state = s);
+    });
+    unawaited(_voiceSub?.cancel());
+    _voiceSub = c.listeningChanges.listen((_) {
+      if (mounted) setState(() {});
     });
     if (!paired) {
       // Só abre o emparelhamento se esta tela está em primeiro plano: outra
@@ -272,6 +278,40 @@ class _RemoteScreenState extends State<RemoteScreen> with WidgetsBindingObserver
   }
 
   bool _supports(RemoteKey k) => _controller?.supportedKeys.contains(k) ?? false;
+  bool get _hasVoice => _controller?.capabilities.contains(RemoteCapability.voiceInput) ?? false;
+  bool get _listening => _controller?.isListening ?? false;
+
+  /// Busca por voz: um toque abre a escuta na TV e transmite o microfone;
+  /// outro toque (ou a TV, ao detectar silêncio) encerra.
+  Future<void> _toggleVoice() async {
+    final svc = AppScope.of(context).devices;
+    final d = svc.active;
+    if (d == null) return;
+    if (!svc.isPaired(d)) {
+      unawaited(_pair(d));
+      return;
+    }
+    try {
+      if (_listening) {
+        await svc.stopVoice(d);
+      } else {
+        await svc.startVoice(d);
+        if (mounted) {
+          ScaffoldMessenger.of(context)
+            ..hideCurrentSnackBar()
+            ..showSnackBar(
+              const SnackBar(content: Text('Ouvindo… fale agora. Toque no microfone de novo para concluir.')),
+            );
+        }
+      }
+    } on PairingException {
+      if (mounted) unawaited(_pair(d));
+    } catch (e) {
+      _toast(e);
+    }
+    if (mounted) setState(() {});
+  }
+
   bool get _longPress => _controller?.device.protocol == RemoteProtocol.androidTv;
 
   @override
@@ -517,7 +557,17 @@ class _MainPanel extends StatelessWidget {
                 children: [
                   _btn(RemoteKey.power, Icons.power_settings_new, 'Ligar/desligar'),
                   _btn(RemoteKey.input, Icons.input, 'Entrada'),
-                  _btn(RemoteKey.assistant, Icons.mic, isHid ? 'Assistente' : 'Google Assistente'),
+                  if (remote._hasVoice)
+                    RemoteButton(
+                      icon: remote._listening ? Icons.graphic_eq : Icons.mic,
+                      semanticLabel: remote._listening ? 'Concluir busca por voz' : 'Busca por voz',
+                      size: 64,
+                      accent: remote._listening,
+                      haptics: haptics,
+                      onTap: remote._toggleVoice,
+                    )
+                  else
+                    _btn(RemoteKey.assistant, Icons.mic, isHid ? 'Assistente' : 'Google Assistente'),
                 ],
               ),
               const SizedBox(height: 20),
@@ -668,25 +718,15 @@ class _MediaPanel extends StatelessWidget {
   }
 }
 
-class _NumbersPanel extends StatefulWidget {
+class _NumbersPanel extends StatelessWidget {
   const _NumbersPanel({required this.remote, required this.haptics});
   final _RemoteScreenState remote;
   final bool haptics;
 
-  @override
-  State<_NumbersPanel> createState() => _NumbersPanelState();
-}
-
-/// Teclado numérico e, no modo ABC, as letras — tudo pelo mesmo caminho de
-/// tecla (`sendKey`), que funciona em qualquer campo da TV.
-class _NumbersPanelState extends State<_NumbersPanel> {
-  static const _alphaRows = ['qwertyuiop', 'asdfghjkl', 'zxcvbnm'];
-  bool _alpha = false;
-
+  /// Teclado numérico: dígitos, traço, apagar, Enter, canal e guia — pelo
+  /// caminho de tecla (`sendKey`), que funciona em qualquer tela da TV.
   @override
   Widget build(BuildContext context) {
-    final remote = widget.remote;
-    final haptics = widget.haptics;
     Widget n(RemoteKey k, String label, {IconData? icon, double size = 72}) => RemoteButton(
       label: icon == null ? label : null,
       icon: icon,
@@ -696,105 +736,52 @@ class _NumbersPanelState extends State<_NumbersPanel> {
       enabled: remote._supports(k),
       onTap: () => remote._key(k),
     );
-    final lettersSupported = remote._supports(RemoteKey.letterA);
-    return LayoutBuilder(
-      builder: (context, c) {
-        final keyW = ((c.maxWidth - 24) / 10 - 6).clamp(28.0, 44.0);
-        Widget letter(RemoteKey k) => RemoteButton(
-          label: k.char.toUpperCase(),
-          semanticLabel: 'Letra ${k.char.toUpperCase()}',
-          size: keyW,
-          haptics: haptics,
-          enabled: remote._supports(k),
-          onTap: () => remote._key(k),
-        );
-        return Center(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (_alpha) ...[
-                  for (final row in _alphaRows)
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 10),
-                      child: Wrap(
-                        spacing: 6,
-                        alignment: WrapAlignment.center,
-                        children: [for (final ch in row.split('')) letter(RemoteKey.fromLetter(ch)!)],
-                      ),
-                    ),
-                  const SizedBox(height: 8),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                    children: [
-                      n(RemoteKey.space, 'Espaço', icon: Icons.space_bar),
-                      n(RemoteKey.backspace, 'Apagar', icon: Icons.backspace_outlined),
-                      n(RemoteKey.enter, 'Enter', icon: Icons.keyboard_return),
-                    ],
-                  ),
-                ] else ...[
-                  for (final row in [
-                    [1, 2, 3],
-                    [4, 5, 6],
-                    [7, 8, 9],
-                  ])
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 18),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                        children: [for (final d in row) n(RemoteKey.fromDigit(d), '$d')],
-                      ),
-                    ),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                    children: [
-                      n(RemoteKey.dash, 'Traço', icon: Icons.remove),
-                      n(RemoteKey.num0, '0'),
-                      n(RemoteKey.backspace, 'Apagar', icon: Icons.backspace_outlined),
-                    ],
-                  ),
-                  const SizedBox(height: 18),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                    children: [
-                      RemotePill(
-                        topIcon: Icons.keyboard_arrow_up,
-                        bottomIcon: Icons.keyboard_arrow_down,
-                        label: 'CH',
-                        height: 120,
-                        enabled: remote._supports(RemoteKey.channelUp),
-                        onTop: () => remote._key(RemoteKey.channelUp),
-                        onBottom: () => remote._key(RemoteKey.channelDown),
-                      ),
-                      n(RemoteKey.enter, 'Enter', icon: Icons.keyboard_return),
-                      n(RemoteKey.guide, 'Guia', icon: Icons.list_alt),
-                    ],
-                  ),
-                ],
-                const SizedBox(height: 24),
-                SegmentedButton<bool>(
-                  segments: const [
-                    ButtonSegment(value: false, label: Text('123'), icon: Icon(Icons.dialpad)),
-                    ButtonSegment(value: true, label: Text('ABC'), icon: Icon(Icons.abc)),
-                  ],
-                  selected: {_alpha},
-                  showSelectedIcon: false,
-                  onSelectionChanged: lettersSupported ? (v) => setState(() => _alpha = v.first) : null,
+    return Center(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            for (final row in [
+              [1, 2, 3],
+              [4, 5, 6],
+              [7, 8, 9],
+            ])
+              Padding(
+                padding: const EdgeInsets.only(bottom: 18),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                  children: [for (final d in row) n(RemoteKey.fromDigit(d), '$d')],
                 ),
-                if (!lettersSupported)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 8),
-                    child: Text(
-                      'Este aparelho não aceita letras pelo controle.',
-                      style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant, fontSize: 12),
-                    ),
-                  ),
+              ),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              children: [
+                n(RemoteKey.dash, 'Traço', icon: Icons.remove),
+                n(RemoteKey.num0, '0'),
+                n(RemoteKey.backspace, 'Apagar', icon: Icons.backspace_outlined),
               ],
             ),
-          ),
-        );
-      },
+            const SizedBox(height: 18),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              children: [
+                RemotePill(
+                  topIcon: Icons.keyboard_arrow_up,
+                  bottomIcon: Icons.keyboard_arrow_down,
+                  label: 'CH',
+                  height: 120,
+                  enabled: remote._supports(RemoteKey.channelUp),
+                  onTop: () => remote._key(RemoteKey.channelUp),
+                  onBottom: () => remote._key(RemoteKey.channelDown),
+                ),
+                n(RemoteKey.enter, 'Enter', icon: Icons.keyboard_return),
+                n(RemoteKey.guide, 'Guia', icon: Icons.list_alt),
+              ],
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

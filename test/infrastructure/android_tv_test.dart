@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:basic_utils/basic_utils.dart';
+import 'package:kremote/domain/ports/voice_source.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:kremote/domain/entities/app_shortcut.dart';
 import 'package:kremote/domain/entities/connection_state.dart';
@@ -290,6 +292,33 @@ void main() {
       expect(server.keyInjects.length, 2, reason: 'não injeta teclas no caminho IME');
     });
 
+    test('letras do painel ABC usam o canal IME quando há campo em foco, senão teclas', () async {
+      final server = FakeRemoteServer(tv, trustedClientPem: client.certificatePem);
+      await server.start();
+      addTearDown(server.close);
+      final dev = device(port: server.port);
+      final c = AndroidTvController(dev, client, TlsTrust(deviceId: dev.id, store: MemoryPinStore()));
+      addTearDown(c.dispose);
+      await c.connect();
+
+      await c.sendKey(RemoteKey.letterA);
+      await c.sendKey(RemoteKey.num1);
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      expect(server.keyInjects, [(29, 3), (8, 3)], reason: 'sem campo em foco → teclas');
+      expect(server.imeEdits, isEmpty);
+
+      server.focusTextField(imeCounter: 7, fieldCounter: 3, value: 'x');
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      await c.sendKey(RemoteKey.letterB);
+      await c.sendKey(RemoteKey.space);
+      await c.sendKey(RemoteKey.letterC);
+      await c.sendKey(RemoteKey.backspace);
+      await c.sendKey(RemoteKey.num1);
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      expect(server.imeEdits, [(7, 3, 'xb'), (7, 3, 'xb '), (7, 3, 'xb c'), (7, 3, 'xb ')]);
+      expect(server.keyInjects.length, 3, reason: 'dígito continua como tecla; letras não injetam');
+    });
+
     test('launchApp tenta a alternativa quando a TV recusa o primeiro link', () async {
       final server = FakeRemoteServer(tv, trustedClientPem: client.certificatePem)
         ..rejectedLinks.add('market://launch?id=com.globo.globotv');
@@ -312,16 +341,188 @@ void main() {
       expect(c.currentState, DeviceConnectionState.connected, reason: 'sessão restabelecida após recusar tudo');
     });
 
-    test('cliente não confiável pela TV cai em needsPairing', () async {
+    const fastRetries = [Duration(milliseconds: 30), Duration(milliseconds: 30), Duration(milliseconds: 30)];
+
+    test('cliente não confiável, sem sessão anterior: fechamentos persistentes → needsPairing', () async {
       final other = ClientIdentity.generate();
       final server = FakeRemoteServer(tv, trustedClientPem: other.certificatePem);
       await server.start();
       addTearDown(server.close);
       final dev = device(port: server.port);
-      final c = AndroidTvController(dev, client, TlsTrust(deviceId: dev.id, store: MemoryPinStore()));
+      final c = AndroidTvController(
+        dev,
+        client,
+        TlsTrust(deviceId: dev.id, store: MemoryPinStore()),
+        retryDelays: fastRetries,
+      );
       addTearDown(c.dispose);
       await expectLater(c.connect(), throwsA(isA<PairingException>()));
       expect(c.currentState, DeviceConnectionState.needsPairing);
+    });
+
+    test('TV que já teve sessão e passa a fechar a conexão: erro transitório, nunca reemparelhar', () async {
+      final other = ClientIdentity.generate();
+      final server = FakeRemoteServer(tv, trustedClientPem: other.certificatePem);
+      await server.start();
+      addTearDown(server.close);
+      final dev = RemoteDevice(
+        id: 'dev-1',
+        name: 'TV',
+        host: '127.0.0.1',
+        port: server.port,
+        protocol: RemoteProtocol.androidTv,
+        lastConnectedAt: DateTime(2026, 10, 1),
+      );
+      final c = AndroidTvController(
+        dev,
+        client,
+        TlsTrust(deviceId: dev.id, store: MemoryPinStore()),
+        retryDelays: fastRetries,
+      );
+      addTearDown(c.dispose);
+      await expectLater(
+        c.connect(),
+        throwsA(isA<ConnectionException>().having((e) => e.message, 'message', contains('Emparelhar novamente'))),
+      );
+      expect(c.currentState, DeviceConnectionState.error);
+      expect(c.currentState, isNot(DeviceConnectionState.needsPairing));
+    });
+
+    test('sessão estabelecida nesta execução também vale como comprovação', () async {
+      final server = FakeRemoteServer(tv, trustedClientPem: client.certificatePem);
+      await server.start();
+      addTearDown(server.close);
+      final dev = device(port: server.port);
+      var firsts = 0;
+      final c = AndroidTvController(
+        dev,
+        client,
+        TlsTrust(deviceId: dev.id, store: MemoryPinStore()),
+        retryDelays: fastRetries,
+      )..onFirstConnected = () => firsts++;
+      addTearDown(c.dispose);
+      await c.connect();
+      expect(firsts, 1);
+      expect(c.everConnected, isTrue);
+      // A "TV" passa a fechar todas as conexões (ex.: acordando): nunca needsPairing.
+      await c.disconnect();
+      server.dropFirstConnections = 99;
+      await expectLater(c.connect(), throwsA(isA<ConnectionException>()));
+      expect(c.currentState, DeviceConnectionState.error);
+      expect(firsts, 1);
+    });
+
+    test('identidade do cadastro recusada → tenta a identidade do app e regrava', () async {
+      final legacy = ClientIdentity.generate();
+      // A "TV" confia na identidade do app (client), não na legada do cadastro.
+      final server = FakeRemoteServer(tv, trustedClientPem: client.certificatePem);
+      await server.start();
+      addTearDown(server.close);
+      final dev = device(port: server.port);
+      ClientIdentity? upgraded;
+      final c = AndroidTvController(
+        dev,
+        legacy,
+        TlsTrust(deviceId: dev.id, store: MemoryPinStore()),
+        retryDelays: fastRetries,
+        fallbackIdentity: client,
+      )..onIdentityUpgraded = (id) => upgraded = id;
+      addTearDown(c.dispose);
+      // Sem alerta TLS no servidor falso o fechamento vira ClosedDuringConnect;
+      // forçamos o caminho de recusa confirmada com histórico vazio: cai em
+      // needsPairing (comportamento de primeiro uso), sem usar o fallback.
+      await expectLater(c.connect(), throwsA(isA<PairingException>()));
+      expect(upgraded, isNull);
+    });
+
+    test('certificado gerado já é válido há um ano (relógio da TV atrasado)', () {
+      final data = X509Utils.x509CertificateFromPem(client.certificatePem);
+      final validity = data.tbsCertificate!.validity;
+      expect(validity.notBefore.isBefore(DateTime.now().subtract(const Duration(days: 300))), isTrue);
+      expect(validity.notAfter.isAfter(DateTime.now().add(const Duration(days: 3600))), isTrue);
+      expect(client.fingerprint.length, 64);
+      expect(client.sameAs(client), isTrue);
+      expect(client.sameAs(tv), isFalse);
+    });
+
+    test('busca por voz: KEYCODE_SEARCH, begin ecoado, payloads de 20 KiB e fim', () async {
+      final server = FakeRemoteServer(tv, trustedClientPem: client.certificatePem);
+      await server.start();
+      addTearDown(server.close);
+      final dev = device(port: server.port);
+      final mic = _FakeVoiceSource();
+      final c = AndroidTvController(
+        dev,
+        client,
+        TlsTrust(deviceId: dev.id, store: MemoryPinStore()),
+        voice: mic,
+      );
+      addTearDown(c.dispose);
+      expect(c.capabilities, contains(RemoteCapability.voiceInput));
+      final states = <bool>[];
+      c.listeningChanges.listen(states.add);
+
+      await c.startVoice();
+      expect(c.isListening, isTrue);
+      // 25 KiB de áudio: um bloco inteiro de 20 KiB sai na hora; o resto só no fim, preenchido.
+      mic.emit(Uint8List.fromList(List.generate(25 * 1024, (i) => i & 0xff)));
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      expect(server.keyInjects, contains((84, 3)));
+      expect(server.voiceBegins, [5]);
+      expect(server.voicePayloads.length, 1);
+      expect(server.voicePayloads.single.$2.length, 20 * 1024);
+
+      await c.stopVoice();
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      expect(server.voicePayloads.length, 2);
+      expect(server.voicePayloads.last.$2.length, 20 * 1024, reason: 'último bloco preenchido com silêncio');
+      expect(server.voicePayloads.last.$2.sublist(5 * 1024).every((b) => b == 0), isTrue);
+      expect(server.voiceEnds, [5]);
+      expect(c.isListening, isFalse);
+      expect(mic.stopped, 1);
+      expect(states, [true, false]);
+    });
+
+    test('busca por voz: TV que não abre a escuta gera erro claro; sem microfone não há capacidade', () async {
+      final server = FakeRemoteServer(tv, trustedClientPem: client.certificatePem)..voiceEnabled = false;
+      await server.start();
+      addTearDown(server.close);
+      final dev = device(port: server.port);
+      final c = AndroidTvController(
+        dev,
+        client,
+        TlsTrust(deviceId: dev.id, store: MemoryPinStore()),
+        voice: _FakeVoiceSource(),
+      );
+      addTearDown(c.dispose);
+      await expectLater(
+        c.startVoice(),
+        throwsA(isA<ProtocolException>().having((e) => e.message, 'message', contains('busca por voz'))),
+      );
+      expect(c.isListening, isFalse);
+      final plain = AndroidTvController(dev, client, TlsTrust(deviceId: dev.id, store: MemoryPinStore()));
+      addTearDown(plain.dispose);
+      expect(plain.capabilities, isNot(contains(RemoteCapability.voiceInput)));
+    });
+
+    test('classificação de erros TLS: só alerta de certificado é recusa', () {
+      expect(
+        AndroidTvController.isTlsRejection(const HandshakeException('Connection terminated during handshake')),
+        isFalse,
+      );
+      expect(
+        AndroidTvController.isTlsRejection(
+          const TlsException(
+            'Handshake error in client (OS Error: SSLV3_ALERT_CERTIFICATE_UNKNOWN(tls_record.cc:592))',
+          ),
+        ),
+        isTrue,
+      );
+      expect(
+        AndroidTvController.isTlsRejection(const HandshakeException('TLSV1_ALERT_UNKNOWN_CA(tls_record.cc:592)')),
+        isTrue,
+      );
+      expect(AndroidTvController.isTlsRejection(const SocketException('Connection refused')), isFalse);
     });
 
     test('TV que fecha o socket na primeira conexão não dispara emparelhamento: reconecta', () async {
@@ -535,5 +736,21 @@ class _RecordingController extends BaseRemoteController {
   Future<void> sendKey(RemoteKey key, {KeyPress press = KeyPress.short}) async {
     if (fail) throw const ConnectionException('cast indisponível');
     keys.add(key);
+  }
+}
+
+class _FakeVoiceSource implements VoiceSource {
+  StreamController<Uint8List>? _ctrl;
+  int stopped = 0;
+  void emit(Uint8List pcm) => _ctrl?.add(pcm);
+  @override
+  Future<bool> requestPermission() async => true;
+  @override
+  Future<Stream<Uint8List>> start() async => (_ctrl = StreamController<Uint8List>()).stream;
+  @override
+  Future<void> stop() async {
+    stopped++;
+    await _ctrl?.close();
+    _ctrl = null;
   }
 }

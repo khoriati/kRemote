@@ -1,10 +1,12 @@
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:kremote/domain/errors.dart';
 import 'package:kremote/infrastructure/net/tls_trust.dart';
 import 'package:kremote/infrastructure/net/wake_on_lan.dart';
 import 'package:kremote/infrastructure/protocols/android_tv/android_tv_certificate.dart';
+import 'package:kremote/infrastructure/voice/microphone_voice_source.dart';
 
 import '../support/fakes.dart';
 
@@ -62,6 +64,30 @@ void main() {
     test('mensagens de falha distinguem pin divergente de emparelhamento', () {
       expect(TlsTrust.describeHandshakeFailure(pinMismatch: true), isA<DeviceMismatchException>());
       expect(TlsTrust.describeHandshakeFailure(pinMismatch: false), isA<PairingException>());
+    });
+  });
+  group('MicrophoneVoiceSource.downsampleHalf', () {
+    test('faz a média de pares e guarda sobras entre chamadas', () {
+      Uint8List pcm(List<int> samples) {
+        final b = ByteData(samples.length * 2);
+        for (var i = 0; i < samples.length; i++) {
+          b.setInt16(i * 2, samples[i], Endian.little);
+        }
+        return b.buffer.asUint8List();
+      }
+
+      List<int> read(Uint8List d) => [
+        for (var i = 0; i < d.length; i += 2) ByteData.sublistView(d).getInt16(i, Endian.little),
+      ];
+      final carry = <int>[];
+      expect(read(MicrophoneVoiceSource.downsampleHalf(pcm([100, 200, -300, -100]), carry)), [150, -200]);
+      expect(carry, isEmpty);
+      // 3 amostras: um par completo e uma sobra que casa com a próxima chamada.
+      expect(read(MicrophoneVoiceSource.downsampleHalf(pcm([10, 20, 30]), carry)), [15]);
+      expect(carry.length, 2);
+      expect(read(MicrophoneVoiceSource.downsampleHalf(pcm([50]), carry)), [40]);
+      expect(carry, isEmpty);
+      expect(read(MicrophoneVoiceSource.downsampleHalf(pcm([32767, 32767]), carry)), [32767]);
     });
   });
 }
