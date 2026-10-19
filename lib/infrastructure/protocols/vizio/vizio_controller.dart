@@ -98,7 +98,7 @@ class VizioPairingFlow implements PairingFlow {
       if (_reqToken == null) throw const PairingException('TV não iniciou o emparelhamento');
       _emit(PairingStage.awaitingPin, 'Digite o PIN exibido na TV');
     } on HandshakeException {
-      _emit(PairingStage.failure, TlsTrust.describeHandshakeFailure(hadPin: trust.hasPin).message);
+      _emit(PairingStage.failure, TlsTrust.describeHandshakeFailure(pinMismatch: trust.pinMismatch).message);
     } catch (e) {
       _emit(PairingStage.failure, e is RemoteException ? e.message : 'Falha: $e');
     }
@@ -170,7 +170,7 @@ class VizioController extends BaseRemoteController {
       setState(DeviceConnectionState.connected);
     } on HandshakeException {
       setState(DeviceConnectionState.error);
-      throw TlsTrust.describeHandshakeFailure(hadPin: trust.hasPin);
+      throw TlsTrust.describeHandshakeFailure(pinMismatch: trust.pinMismatch);
     } catch (e) {
       if (currentState != DeviceConnectionState.needsPairing) setState(DeviceConnectionState.error);
       throw e is RemoteException ? e : ConnectionException(e.toString());

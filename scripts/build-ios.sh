@@ -2,7 +2,7 @@
 # Build iOS.
 #   scripts/build-ios.sh setup             # dependências nativas + abre assinatura no Xcode (1ª vez)
 #   scripts/build-ios.sh run               # compila e roda no iPhone conectado (debug, hot reload)
-#   scripts/build-ios.sh device            # instala build release no iPhone conectado
+#   scripts/build-ios.sh device [id]       # deploy: instala release (sem debug) no iPhone, por cima (mantém dados)
 #   scripts/build-ios.sh ipa               # .ipa para distribuição (TestFlight/ad-hoc)
 #   scripts/build-ios.sh archive-nosign    # .xcarchive sem assinatura (CI)
 #
@@ -50,11 +50,15 @@ case "$MODE" in
     ;;
   device)
     apply_team
-    DEVICE="$(iphone_id)"; [[ -n "$DEVICE" ]] || die "Nenhum iPhone conectado/confiável"
-    log "Instalando release no iPhone $DEVICE"
-    flutter build ios --release --build-name "$VERSION" --build-number "$NUMBER"
-    flutter install -d "$DEVICE" --release
-    ok "Instalado"
+    DEVICE="${2:-$(iphone_id)}"; [[ -n "$DEVICE" ]] || die "Nenhum iPhone conectado/confiável (USB ou Wi-Fi)"
+    log "Build release v$VERSION ($NUMBER) — ofuscado, sem debug"
+    flutter build ios --release --build-name "$VERSION" --build-number "$NUMBER" \
+      --obfuscate --split-debug-info=build/symbols/ios
+    log "Instalando no iPhone $DEVICE (atualização por cima, preserva cadastros e emparelhamentos)"
+    # `flutter install` desinstala antes; devicectl instala por cima mantendo o container do app.
+    xcrun devicectl device install app --device "$DEVICE" build/ios/iphoneos/Runner.app \
+      || { warn "devicectl falhou; usando flutter install (apaga os dados do app)"; flutter install -d "$DEVICE" --release; }
+    ok "Instalado — abra o kRemote no aparelho"
     ;;
   ipa)
     apply_team
@@ -81,5 +85,5 @@ PLIST
     flutter build ios --release --no-codesign --build-name "$VERSION" --build-number "$NUMBER"
     ok "Runner.app em build/ios/iphoneos"
     ;;
-  *) die "modo desconhecido: $MODE (setup|run|device|ipa|archive-nosign)" ;;
+  *) die "modo desconhecido: $MODE (setup|run|device [id]|ipa|archive-nosign)" ;;
 esac

@@ -3,12 +3,15 @@ import '../domain/ports/certificate_pin_store.dart';
 import '../domain/ports/credential_store.dart';
 import '../domain/ports/pairing_flow.dart';
 import '../domain/ports/remote_controller.dart';
+import '../domain/ports/voice_source.dart';
 import 'net/log.dart';
 import 'net/tls_trust.dart';
 import 'protocols/android_tv/android_tv_certificate.dart';
 import 'protocols/android_tv/android_tv_controller.dart';
 import 'protocols/android_tv/android_tv_pairing.dart';
+import 'protocols/bluetooth_hid/bluetooth_hid_channel.dart';
 import 'protocols/bluetooth_hid/bluetooth_hid_controller.dart';
+import 'protocols/bluetooth_hid/bluetooth_hid_waker.dart';
 import 'protocols/cast/cast_controller.dart';
 import 'protocols/lg/lg_controller.dart';
 import 'protocols/philips/philips_controller.dart';
@@ -16,14 +19,29 @@ import 'protocols/roku/roku_controller.dart';
 import 'protocols/samsung/samsung_controller.dart';
 import 'protocols/sony/sony_controller.dart';
 import 'protocols/vizio/vizio_controller.dart';
+import 'voice/microphone_voice_source.dart';
 
 /// Monta o adapter concreto para cada protocolo, injetando credenciais e a
 /// política de confiança TLS do dispositivo.
 class ControllerFactory {
-  ControllerFactory({required this.credentials, required this.pins});
+  ControllerFactory({
+    required this.credentials,
+    required this.pins,
+    BluetoothHidChannel? bluetooth,
+    VoiceSource? Function()? voice,
+  }) : _bluetooth = bluetooth, // ignore: prefer_initializing_formals
+       _voiceFactory = voice;
+
+  /// Fonte de voz por controlador (microfone); `null` desliga a busca por voz
+  /// (ex.: testes). Por padrão, o microfone do celular.
+  final VoiceSource? Function()? _voiceFactory;
+  VoiceSource? get voiceSource => _voiceFactory == null ? MicrophoneVoiceSource() : _voiceFactory();
 
   final CredentialStore credentials;
   final CertificatePinStore pins;
+
+  /// Canal HID Bluetooth (Android); `null` em plataformas sem suporte.
+  final BluetoothHidChannel? _bluetooth;
 
   /// Chave (no CredentialStore) da identidade única do app para Android TV.
   static const appIdentityKey = 'app:android-tv-identity';
@@ -62,7 +80,12 @@ class ControllerFactory {
         d,
         ClientIdentity.fromCredentials(creds),
         _trust(d),
-        volumeFallback: d.volumeViaCast ? CastController(_castTwin(d), _trust(_castTwin(d))) : null,
+        fallbackIdentity: await appIdentity(),
+        voice: voiceSource,
+        cast: CastController(_castTwin(d), _trust(_castTwin(d))),
+        bluetooth: d.bluetoothAddress != null && (_bluetooth?.isPlatformSupported ?? false)
+            ? BluetoothHidWaker(d.bluetoothAddress!, channel: _bluetooth!)
+            : null,
       ),
       RemoteProtocol.cast => CastController(d, _trust(d)),
       RemoteProtocol.samsungTizen => SamsungController(d, creds?['token'], _trust(d)),

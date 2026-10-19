@@ -299,7 +299,7 @@ class LgPairingFlow implements PairingFlow {
       );
       s.send(_registerPayload(null));
     } on HandshakeException {
-      _emit(PairingStage.failure, TlsTrust.describeHandshakeFailure(hadPin: trust.hasPin).message);
+      _emit(PairingStage.failure, TlsTrust.describeHandshakeFailure(pinMismatch: trust.pinMismatch).message);
     } catch (e) {
       _emit(PairingStage.failure, 'Não foi possível conectar: $e');
     }
@@ -367,7 +367,7 @@ class LgController extends BaseRemoteController {
       );
     } on HandshakeException {
       _teardown(DeviceConnectionState.error);
-      throw _fail(TlsTrust.describeHandshakeFailure(hadPin: trust.hasPin));
+      throw _fail(TlsTrust.describeHandshakeFailure(pinMismatch: trust.pinMismatch));
     } catch (e) {
       if (currentState != DeviceConnectionState.needsPairing) _teardown(DeviceConnectionState.error);
       throw _fail(e is RemoteException ? e : ConnectionException(e.toString()));

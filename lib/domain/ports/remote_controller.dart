@@ -22,9 +22,29 @@ abstract class RemoteController {
   /// Digita texto no campo com foco (quando [RemoteCapability.textInput]).
   Future<void> sendText(String text) async => throw UnsupportedError('sendText');
 
+  /// Envia um único caractere como pressionamento de tecla (teclado do
+  /// controle). Por padrão delega a [sendText].
+  Future<void> sendChar(String ch) => sendText(ch);
+
+  /// Busca por voz (quando [RemoteCapability.voiceInput]): abre a escuta na
+  /// TV e transmite o microfone até [stopVoice], até a TV encerrar ou até o
+  /// tempo máximo.
+  Future<void> startVoice() async => throw UnsupportedError('startVoice');
+  Future<void> stopVoice() async {}
+
+  /// Está transmitindo voz agora? Mudanças em [listeningChanges].
+  bool get isListening => false;
+  Stream<bool> get listeningChanges => const Stream.empty();
+
   /// Abre um app (quando [RemoteCapability.appLaunch]).
   Future<void> launchApp(AppShortcut app) async => throw UnsupportedError('launchApp');
 
   bool supportsApp(AppShortcut app) =>
       capabilities.contains(RemoteCapability.appLaunch) && app.ids.containsKey(device.protocol.name);
+
+  /// Consulta ao aparelho quais dos [apps] estão realmente instalados.
+  ///
+  /// Devolve o subconjunto confirmado, ou `null` quando o protocolo não
+  /// permite verificar (a UI então mostra todos os atalhos suportados).
+  Future<Set<AppShortcut>?> installedApps(List<AppShortcut> apps) async => null;
 }

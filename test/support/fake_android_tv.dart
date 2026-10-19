@@ -88,7 +88,13 @@ class FakePairingServer {
             final ok = expected != null && _eq(secret, expected!);
             lastSecretStatus = ok ? 200 : 402;
             socket.add(_wrap(41, ProtoWriter()..bytes(1, expected ?? Uint8List(0)), status: lastSecretStatus!));
-            if (!ok) socket.destroy();
+            // Como a TV real: encerra a conexão logo após responder ao segredo.
+            if (ok) {
+              // O cliente pode derrubar a conexão antes do flush: ignora.
+              unawaited(socket.close().catchError((_) => socket));
+            } else {
+              socket.destroy();
+            }
         }
       }
     }, onError: (_) {});
@@ -113,8 +119,23 @@ class FakeRemoteServer {
   late SecureServerSocket _server;
   final keyInjects = <(int, int)>[];
   final appLinks = <String>[];
+
+  /// Links que a "TV" recusa com `remote_error`.
+  final rejectedLinks = <String>{};
   final imeEdits = <(int, int, String)>[];
   SecureSocket? _client;
+
+  /// Voz: sessão aberta ao receber KEYCODE_SEARCH (84), payloads e fins recebidos.
+  int voiceSessionId = 5;
+  bool voiceEnabled = true;
+  final voiceBegins = <int>[];
+  final voicePayloads = <(int, Uint8List)>[];
+  final voiceEnds = <int>[];
+
+  /// Quantas conexões iniciais a "TV" fecha logo após o handshake, sem
+  /// mensagem (como faz ao acordar ou com a sessão anterior ainda viva).
+  int dropFirstConnections = 0;
+  int connections = 0;
 
   /// Simula a TV anunciando um campo de texto em foco.
   void focusTextField({int imeCounter = 7, int fieldCounter = 3, String value = ''}) {
@@ -147,13 +168,19 @@ class FakeRemoteServer {
       ..setTrustedCertificatesBytes(trustedClientPem.codeUnits)
       ..setClientAuthoritiesBytes(trustedClientPem.codeUnits);
     _server = await SecureServerSocket.bind('127.0.0.1', 0, ctx, requestClientCertificate: true);
-    _server.listen(_serve, onError: (Object _) {});
+    // Handshakes abortados pelo cliente (ex.: dispose durante um reconnect)
+    // chegam como erro assíncrono fora do stream; não podem derrubar o teste.
+    runZonedGuarded(() => _server.listen(_serve, onError: (Object _) {}), (_, _) {});
   }
 
   Uint8List _msg(int field, ProtoWriter inner) =>
       ProtoWriter.frameVarint((ProtoWriter()..message(field, inner)).toBytes());
 
   void _serve(SecureSocket socket) {
+    if (connections++ < dropFirstConnections) {
+      socket.destroy();
+      return;
+    }
     _client = socket;
     final buf = <int>[];
     final info = ProtoWriter()
@@ -183,8 +210,31 @@ class FakeRemoteServer {
         } else if (m.containsKey(10)) {
           final k = m[10]!.asMessage.readAll();
           keyInjects.add((k[1]!.asInt, k[2]!.asInt));
+          if (k[1]!.asInt == 84 && voiceEnabled) {
+            socket.add(
+              _msg(
+                30,
+                ProtoWriter()
+                  ..int32(1, voiceSessionId)
+                  ..string(2, 'com.google.android.katniss'),
+              ),
+            );
+          }
+        } else if (m.containsKey(30)) {
+          voiceBegins.add(m[30]!.asMessage.readAll()[1]!.asInt);
+        } else if (m.containsKey(31)) {
+          final v = m[31]!.asMessage.readAll();
+          voicePayloads.add((v[1]!.asInt, v[2]!.asBytes));
+        } else if (m.containsKey(32)) {
+          voiceEnds.add(m[32]!.asMessage.readAll()[1]!.asInt);
         } else if (m.containsKey(90)) {
-          appLinks.add(m[90]!.asMessage.readAll()[1]!.asString);
+          final link = m[90]!.asMessage.readAll()[1]!.asString;
+          appLinks.add(link);
+          if (rejectedLinks.contains(link)) {
+            // Como a TV real: remote_error 7 e fecha a conexão.
+            socket.add(_msg(3, ProtoWriter()..int32(1, 7)));
+            unawaited(socket.close().catchError((_) => socket));
+          }
         } else if (m.containsKey(21)) {
           final batch = m[21]!.asMessage.readAll();
           final status = batch[3]!.asMessage.readAll()[2]!.asMessage.readAll();

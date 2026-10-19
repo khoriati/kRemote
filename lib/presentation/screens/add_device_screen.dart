@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -7,7 +6,6 @@ import '../../app/app_scope.dart';
 import '../../application/device_service.dart';
 import '../../domain/entities/remote_device.dart';
 import '../../domain/errors.dart';
-import 'pairing_sheet.dart';
 
 /// Descoberta automática + cadastro manual + computadores Bluetooth.
 class AddDeviceScreen extends StatefulWidget {
@@ -18,9 +16,6 @@ class AddDeviceScreen extends StatefulWidget {
 }
 
 class _AddDeviceScreenState extends State<AddDeviceScreen> {
-  final _found = <String, DiscoveredDevice>{};
-  StreamSubscription<DiscoveredDevice>? _sub;
-  bool _scanning = false;
   List<({String name, String address})> _bonded = const [];
   String? _btError;
 
@@ -28,30 +23,11 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      _scan();
+      if (!mounted) return;
+      // Varredura contínua enquanto a tela estiver aberta (heartbeat da lista).
+      AppScope.of(context).scanner.watch();
       _loadBluetooth();
     });
-  }
-
-  Future<void> _scan() async {
-    final discovery = AppScope.of(context).discovery;
-    await _sub?.cancel();
-    if (!mounted) return;
-    setState(() {
-      _scanning = true;
-      _found.clear();
-    });
-    _sub = discovery
-        .discover(timeout: const Duration(seconds: 8))
-        .listen(
-          (d) => setState(() => _found[d.key] = d),
-          onDone: () {
-            if (mounted) setState(() => _scanning = false);
-          },
-          onError: (_) {
-            if (mounted) setState(() => _scanning = false);
-          },
-        );
   }
 
   Future<void> _loadBluetooth() async {
@@ -72,24 +48,21 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
 
   @override
   void dispose() {
-    _sub?.cancel();
+    AppScope.of(context).scanner.unwatch();
     super.dispose();
   }
 
+  /// Cadastra e volta ao controle, que abre o emparelhamento se necessário
+  /// (um único fluxo de emparelhamento por vez).
   Future<void> _add(RemoteDevice d) async {
     final svc = AppScope.of(context).devices;
-    final RemoteDevice added;
     try {
-      added = await svc.add(d);
+      await svc.add(d);
     } on RemoteException catch (e) {
       _snack(e.message);
       return;
     }
     if (!mounted) return;
-    if (added.protocol.requiresPairing && !svc.isPaired(added)) {
-      await PairingSheet.show(context, added);
-      if (!mounted) return;
-    }
     Navigator.of(context).pop();
   }
 
@@ -98,28 +71,34 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
-    final existing = AppScope.of(context).devices.devices.map((d) => d.id).toSet();
-    final atvHosts = _found.values.where((d) => d.protocol == RemoteProtocol.androidTv).map((d) => d.host).toSet();
+    final scope = AppScope.of(context);
+    return ListenableBuilder(
+      listenable: Listenable.merge([scope.scanner, scope.devices]),
+      builder: (context, _) => _buildBody(context, cs, scope),
+    );
+  }
+
+  Widget _buildBody(BuildContext context, ColorScheme cs, AppScope scope) {
+    final svc = scope.devices;
+    final scanner = scope.scanner;
+    final scanning = scanner.scanning || scanner.deepScanning;
+    final all = scanner.found;
+    final atvHosts = all.where((d) => d.protocol == RemoteProtocol.androidTv).map((d) => d.host).toSet();
     final castModelByHost = {
-      for (final d in _found.values)
+      for (final d in all)
         if (d.protocol == RemoteProtocol.cast && d.model != null) d.host: d.model!,
     };
-    final found =
-        _found.values
-            // Chromecast com Google TV anuncia os dois serviços; o Android TV é o completo.
-            .where((d) => !(d.protocol == RemoteProtocol.cast && atvHosts.contains(d.host)))
-            .toList()
-          ..sort((a, b) {
-            // Google TV / Android TV primeiro: é o caminho preferido.
-            final pa = a.protocol == RemoteProtocol.androidTv ? 0 : 1;
-            final pb = b.protocol == RemoteProtocol.androidTv ? 0 : 1;
-            return pa != pb ? pa.compareTo(pb) : a.name.compareTo(b.name);
-          });
+    // Chromecast com Google TV anuncia os dois serviços; o Android TV é o completo.
+    final found = all.where((d) => !(d.protocol == RemoteProtocol.cast && atvHosts.contains(d.host))).toList();
     return Scaffold(
       appBar: AppBar(
         title: const Text('Adicionar dispositivo'),
         actions: [
-          IconButton(tooltip: 'Buscar novamente', onPressed: _scanning ? null : _scan, icon: const Icon(Icons.refresh)),
+          IconButton(
+            tooltip: 'Buscar novamente',
+            onPressed: scanning ? null : () => scanner.scan(),
+            icon: const Icon(Icons.refresh),
+          ),
         ],
       ),
       body: ListView(
@@ -127,15 +106,16 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
         children: [
           _SectionHeader(
             title: 'Encontrados na rede',
-            trailing: _scanning
+            trailing: scanning
                 ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
                 : null,
           ),
-          if (found.isEmpty && !_scanning)
+          if (found.isEmpty && !scanning)
             Padding(
               padding: const EdgeInsets.symmetric(vertical: 16),
               child: Text(
-                'Nenhum aparelho encontrado. Confira se o celular está no mesmo Wi-Fi da TV ou adicione pelo IP abaixo.',
+                'Nenhum aparelho encontrado. Confira se o celular está no mesmo Wi-Fi da TV, '
+                'varra toda a rede ou adicione pelo IP abaixo.',
                 style: TextStyle(color: cs.onSurfaceVariant),
               ),
             ),
@@ -152,12 +132,28 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
                 ),
                 title: Text(d.name),
                 subtitle: Text('${d.protocol.label} · ${d.host}${d.model != null ? ' · ${d.model}' : ''}'),
-                trailing: existing.contains(_withModel(d, castModelByHost).toDevice().id)
-                    ? const Icon(Icons.check)
-                    : const Icon(Icons.add),
-                onTap: existing.contains(_withModel(d, castModelByHost).toDevice().id)
-                    ? null
-                    : () => _add(_withModel(d, castModelByHost).toDevice()),
+                trailing: svc.findRegistered(d) != null ? const Icon(Icons.check) : const Icon(Icons.add),
+                onTap: svc.findRegistered(d) != null ? null : () => _add(_withModel(d, castModelByHost).toDevice()),
+              ),
+            ),
+          if (scanner.canScanDeep)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: OutlinedButton.icon(
+                onPressed: scanner.deepScanning ? null : () => scanner.scanDeep(),
+                icon: scanner.deepScanning
+                    ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                    : const Icon(Icons.radar),
+                label: Text(scanner.deepScanning ? 'Varrendo a rede…' : 'Varrer toda a rede'),
+              ),
+            ),
+          if (scanner.canScanDeep)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(4, 6, 4, 0),
+              child: Text(
+                'Testa as portas de Samsung, LG, Roku, Sony, Philips, Vizio e Google TV em todos os IPs da rede. '
+                'Leva cerca de um minuto; útil quando a TV não se anuncia (iPhone, Wi-Fi com isolamento).',
+                style: TextStyle(fontSize: 12, color: cs.onSurfaceVariant),
               ),
             ),
           const SizedBox(height: 16),
@@ -165,7 +161,7 @@ class _AddDeviceScreenState extends State<AddDeviceScreen> {
           Card(
             child: Padding(
               padding: const EdgeInsets.all(16),
-              child: _ManualForm(onSubmit: _add),
+              child: _ManualForm(onSubmit: _add, identify: scanner.canIdentify ? scanner.identify : null),
             ),
           ),
           if (Platform.isAndroid) ...[
@@ -253,8 +249,11 @@ class _SectionHeader extends StatelessWidget {
 }
 
 class _ManualForm extends StatefulWidget {
-  const _ManualForm({required this.onSubmit});
+  const _ManualForm({required this.onSubmit, this.identify});
   final Future<void> Function(RemoteDevice) onSubmit;
+
+  /// Sonda o host e devolve o protocolo/nome/MAC detectados (opcional).
+  final Future<DiscoveredDevice?> Function(String host)? identify;
 
   @override
   State<_ManualForm> createState() => _ManualFormState();
@@ -267,11 +266,41 @@ class _ManualFormState extends State<_ManualForm> {
   final _port = TextEditingController();
   final _mac = TextEditingController();
   RemoteProtocol _protocol = RemoteProtocol.androidTv;
+  bool _detecting = false;
+  String? _detectMessage;
 
   @override
   void initState() {
     super.initState();
     _port.text = '${_protocol.defaultPort}';
+  }
+
+  /// Sonda o IP digitado e preenche tipo, porta, nome, modelo e MAC.
+  Future<void> _detect() async {
+    final identify = widget.identify;
+    final host = _host.text.trim();
+    if (identify == null || !isValidHost(host)) {
+      setState(() => _detectMessage = 'Digite um IP ou host válido');
+      return;
+    }
+    setState(() {
+      _detecting = true;
+      _detectMessage = null;
+    });
+    final d = await identify(host);
+    if (!mounted) return;
+    setState(() {
+      _detecting = false;
+      if (d == null) {
+        _detectMessage = 'Nenhum protocolo suportado respondeu nesse endereço. Confira se a TV está ligada.';
+        return;
+      }
+      _protocol = d.protocol;
+      _port.text = '${d.port}';
+      if (_name.text.trim().isEmpty) _name.text = d.name;
+      if (d.macAddress != null) _mac.text = d.macAddress!;
+      _detectMessage = 'Detectado: ${d.protocol.label}${d.model != null ? ' · ${d.model}' : ''}';
+    });
   }
 
   @override
@@ -287,6 +316,8 @@ class _ManualFormState extends State<_ManualForm> {
     RemoteProtocol.samsungTizen,
     RemoteProtocol.lgWebOs,
     RemoteProtocol.sonyBravia,
+    RemoteProtocol.philipsJointSpace,
+    RemoteProtocol.roku,
   }.contains(_protocol);
 
   void _submit() {
@@ -352,7 +383,21 @@ class _ManualFormState extends State<_ManualForm> {
                 flex: 3,
                 child: TextFormField(
                   controller: _host,
-                  decoration: const InputDecoration(labelText: 'IP ou host'),
+                  decoration: InputDecoration(
+                    labelText: 'IP ou host',
+                    suffixIcon: widget.identify == null
+                        ? null
+                        : _detecting
+                        ? const Padding(
+                            padding: EdgeInsets.all(12),
+                            child: SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
+                          )
+                        : IconButton(
+                            tooltip: 'Detectar tipo de aparelho',
+                            icon: const Icon(Icons.search),
+                            onPressed: _detect,
+                          ),
+                  ),
                   keyboardType: TextInputType.url,
                   autocorrect: false,
                   validator: (v) => isValidHost(v ?? '') ? null : 'Endereço inválido',
@@ -372,6 +417,14 @@ class _ManualFormState extends State<_ManualForm> {
               ),
             ],
           ),
+          if (_detectMessage != null)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(4, 6, 4, 0),
+              child: Text(
+                _detectMessage!,
+                style: TextStyle(fontSize: 12, color: Theme.of(context).colorScheme.onSurfaceVariant),
+              ),
+            ),
           if (_wantsMac) ...[
             const SizedBox(height: 12),
             TextFormField(

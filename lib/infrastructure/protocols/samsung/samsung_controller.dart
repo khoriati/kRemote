@@ -63,7 +63,9 @@ const samsungKeys = <RemoteKey, String>{
 String _samsungUrl(RemoteDevice d, String? token) {
   final name = base64.encode(utf8.encode('kRemote'));
   final t = token == null ? '' : '&token=$token';
-  return 'wss://${d.host}:${d.port}/api/v2/channels/samsung.remote.control?name=$name$t';
+  // Tizen 2016–2017 (sem TokenAuthSupport) só atende em ws:// na 8001.
+  final scheme = d.port == 8001 ? 'ws' : 'wss';
+  return '$scheme://${d.host}:${d.port}/api/v2/channels/samsung.remote.control?name=$name$t';
 }
 
 /// Emparelhamento Samsung: a TV pede permissão na tela e devolve um token.
@@ -118,7 +120,7 @@ class SamsungPairingFlow implements PairingFlow {
         },
       );
     } on HandshakeException {
-      _emit(PairingStage.failure, TlsTrust.describeHandshakeFailure(hadPin: trust.hasPin).message);
+      _emit(PairingStage.failure, TlsTrust.describeHandshakeFailure(pinMismatch: trust.pinMismatch).message);
     } catch (e) {
       _emit(PairingStage.failure, 'Não foi possível conectar: $e');
     }
@@ -186,7 +188,7 @@ class SamsungController extends BaseRemoteController {
       );
     } on HandshakeException {
       _teardown(DeviceConnectionState.error);
-      throw _fail(TlsTrust.describeHandshakeFailure(hadPin: trust.hasPin));
+      throw _fail(TlsTrust.describeHandshakeFailure(pinMismatch: trust.pinMismatch));
     } catch (e) {
       if (currentState != DeviceConnectionState.needsPairing) _teardown(DeviceConnectionState.error);
       throw _fail(e is RemoteException ? e : ConnectionException(e.toString()));

@@ -3,6 +3,7 @@ import 'dart:isolate';
 import 'dart:typed_data';
 
 import 'package:basic_utils/basic_utils.dart';
+import 'package:crypto/crypto.dart' as crypto;
 import 'package:pointycastle/asn1.dart';
 
 /// Par certificado/chave RSA usado como identidade do cliente no protocolo
@@ -24,14 +25,29 @@ class ClientIdentity {
   }
 
   /// Gera um novo certificado autoassinado RSA-2048 válido por 10 anos.
+  ///
+  /// `notBefore` fica um ano no passado: uma TV recém-ligada, antes de
+  /// sincronizar o relógio, pode estar com data atrasada e recusar com
+  /// `CERTIFICATE_UNKNOWN` um certificado "ainda não válido".
   static ClientIdentity generate({String commonName = 'kRemote'}) {
     final pair = CryptoUtils.generateRSAKeyPair(keySize: 2048);
     final priv = pair.privateKey as RSAPrivateKey;
     final pub = pair.publicKey as RSAPublicKey;
     final csr = X509Utils.generateRsaCsrPem({'CN': commonName, 'O': 'kRemote', 'C': 'BR'}, priv, pub);
-    final cert = X509Utils.generateSelfSignedCertificate(priv, csr, 3650);
+    final cert = X509Utils.generateSelfSignedCertificate(
+      priv,
+      csr,
+      3650 + 365,
+      notBefore: DateTime.now().toUtc().subtract(const Duration(days: 365)),
+    );
     return ClientIdentity(certificatePem: cert, privateKeyPem: CryptoUtils.encodeRSAPrivateKeyToPem(priv));
   }
+
+  /// Impressão digital SHA-256 do certificado (12 hex iniciais para log).
+  String get fingerprint => crypto.sha256.convert(_pemToDer(certificatePem)).toString();
+  String get shortFingerprint => fingerprint.substring(0, 12);
+
+  bool sameAs(ClientIdentity? other) => other != null && other.certificatePem == certificatePem;
 
   /// Gera em isolate separado: a geração RSA em Dart puro pode levar vários
   /// segundos em celulares e não deve travar a UI.

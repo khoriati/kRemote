@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:share_plus/share_plus.dart';
 
 import '../../infrastructure/net/log.dart';
 
@@ -37,6 +38,19 @@ class _DebugLogScreenState extends State<DebugLogScreen> {
     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Log copiado')));
   }
 
+  /// Compartilha o log (AirDrop, Mail, Notas…): a área de transferência
+  /// universal entre iPhone e Mac não é confiável para textos longos.
+  Future<void> _share() async {
+    final box = context.findRenderObject() as RenderBox?;
+    await SharePlus.instance.share(
+      ShareParams(
+        text: KLog.dump(),
+        subject: 'kRemote — diagnóstico',
+        sharePositionOrigin: box == null ? null : box.localToGlobal(Offset.zero) & box.size,
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final entries = KLog.entries.reversed.toList();
@@ -50,9 +64,9 @@ class _DebugLogScreenState extends State<DebugLogScreen> {
         ],
       ),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: _copy,
-        icon: const Icon(Icons.copy),
-        label: const Text('Copiar'),
+        onPressed: _share,
+        icon: const Icon(Icons.ios_share),
+        label: const Text('Compartilhar'),
       ),
       body: entries.isEmpty
           ? Center(

@@ -3,7 +3,6 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../app/app_scope.dart';
-import '../../domain/entities/app_shortcut.dart';
 import '../../domain/entities/connection_state.dart';
 import '../../domain/entities/remote_device.dart';
 import '../../domain/entities/remote_key.dart';
@@ -13,7 +12,9 @@ import '../widgets/dpad.dart';
 import '../widgets/remote_button.dart';
 import '../widgets/status_chip.dart';
 import '../../infrastructure/net/log.dart';
+import '../../application/device_service.dart';
 import 'add_device_screen.dart';
+import 'available_devices_sheet.dart';
 import 'debug_log_screen.dart';
 import 'devices_screen.dart';
 import 'pairing_sheet.dart';
@@ -27,52 +28,195 @@ class RemoteScreen extends StatefulWidget {
   State<RemoteScreen> createState() => _RemoteScreenState();
 }
 
-class _RemoteScreenState extends State<RemoteScreen> {
+class _RemoteScreenState extends State<RemoteScreen> with WidgetsBindingObserver {
   RemoteController? _controller;
   StreamSubscription<DeviceConnectionState>? _sub;
+  StreamSubscription<bool>? _voiceSub;
   DeviceConnectionState _state = DeviceConnectionState.disconnected;
   String? _boundId;
+  String? _boundHost;
+  bool _boundPaired = false;
+  bool _pairingOpen = false;
+  bool _finderOpen = false;
+  bool _recovering = false;
+
+  /// Já listou os disponíveis para a ligação atual (evita reabrir a cada falha).
+  bool _autoListed = false;
   int _panel = 0;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     WidgetsBinding.instance.addPostFrameCallback((_) => _bind());
   }
 
-  Future<void> _bind() async {
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _sub?.cancel();
+    _voiceSub?.cancel();
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed) return;
+    // Ao voltar do segundo plano os sockets podem ter morrido: reconecta.
     final svc = AppScope.of(context).devices;
     final d = svc.active;
-    if (d == null || d.id == _boundId) return;
-    // Marca antes de qualquer await para evitar bind duplicado no mesmo frame.
-    _boundId = d.id;
-    KLog.d('ui', 'ativo: ${d.name} (${d.protocol.name} ${d.host}:${d.port}) emparelhado=${svc.isPaired(d)}');
+    if (d == null || !svc.isPaired(d) || _state == DeviceConnectionState.connected) return;
+    KLog.d('ui', 'app retomado com estado ${_state.name}: reconectando');
+    unawaited(_reconnect(auto: true));
+  }
+
+  bool get _isCurrent => ModalRoute.of(context)?.isCurrent ?? true;
+
+  /// A ligação precisa ser refeita quando muda o aparelho ativo, o seu
+  /// endereço, o estado de emparelhamento ou quando o serviço recriou o
+  /// controlador (após emparelhar, atualizar ou redefinir confiança).
+  bool _needsBind(DeviceService svc, RemoteDevice? d) {
+    if (d == null) return _boundId != null;
+    return d.id != _boundId ||
+        d.host != _boundHost ||
+        svc.isPaired(d) != _boundPaired ||
+        !identical(svc.controllerIfCreated(d), _controller);
+  }
+
+  Future<void> _bind() async {
+    if (!mounted) return;
+    final svc = AppScope.of(context).devices;
+    final d = svc.active;
+    if (!_needsBind(svc, d)) return;
     unawaited(_sub?.cancel());
     _sub = null;
     _controller = null;
-    if (!mounted) return;
+    if (d == null) {
+      _boundId = null;
+      _boundHost = null;
+      setState(() => _state = DeviceConnectionState.disconnected);
+      return;
+    }
+    final paired = svc.isPaired(d);
+    // Marca antes de qualquer await para evitar bind duplicado no mesmo frame.
+    _boundId = d.id;
+    _boundHost = d.host;
+    _boundPaired = paired;
+    _autoListed = false;
+    KLog.d('ui', 'ativo: ${d.name} (${d.protocol.name} ${d.host}:${d.port}) emparelhado=$paired');
     setState(() => _state = DeviceConnectionState.disconnected);
     final c = await svc.controller(d);
-    if (!mounted || _boundId != d.id) return;
+    if (!mounted || _boundId != d.id || _boundHost != d.host) return;
     setState(() => _controller = c);
     _sub = c.connectionState.listen((s) {
       if (mounted) setState(() => _state = s);
     });
-    if (svc.isPaired(d)) {
-      unawaited(c.connect().catchError((Object e) => _toast(e)));
-    } else {
-      // Aparelho ainda não emparelhado: abre o fluxo imediatamente.
-      unawaited(_pair(d));
+    unawaited(_voiceSub?.cancel());
+    _voiceSub = c.listeningChanges.listen((_) {
+      if (mounted) setState(() {});
+    });
+    if (!paired) {
+      // Só abre o emparelhamento se esta tela está em primeiro plano: outra
+      // tela (ex.: cadastro) pode estar conduzindo o seu próprio fluxo.
+      if (_isCurrent) unawaited(_pair(d));
+      return;
+    }
+    unawaited(_reconnect(auto: true));
+  }
+
+  /// Conecta ao aparelho ativo. Se ele não responde no endereço gravado,
+  /// procura-o na rede (IP mudou após reinício do roteador / troca de Wi-Fi)
+  /// e, se ainda assim não o encontra, lista os aparelhos disponíveis.
+  Future<void> _reconnect({bool auto = false}) async {
+    if (_recovering) return;
+    final svc = AppScope.of(context).devices;
+    final d = svc.active;
+    if (d == null || !svc.isPaired(d)) return;
+    _recovering = true;
+    try {
+      // Antes de concluir falha, sonda também a porta de repouso: uma TV
+      // desligada com "standby em rede" responde só nela. Duas sondagens,
+      // porque o Wi-Fi da TV em economia de energia perde o primeiro pacote.
+      final presence = await svc.probePresence(d, attempts: 2);
+      if (!mounted) return;
+      if (presence == Presence.standby) {
+        KLog.d('ui', '${d.name} em repouso (porta de repouso responde); aguardando Power');
+        setState(() => _state = DeviceConnectionState.standby);
+        return;
+      }
+      if (presence == Presence.online) {
+        try {
+          await svc.connect(d);
+          return;
+        } on PairingException {
+          if (mounted && _isCurrent) unawaited(_pair(d));
+          return;
+        } on DeviceMismatchException {
+          // Outro aparelho ocupa o IP antigo: a TV cadastrada está em outro
+          // endereço (ou fora da rede). Nunca é caso de reemparelhar.
+          KLog.d('ui', '${d.name}: outro aparelho responde em ${d.host}; procurando a TV pelo certificado');
+        } on RemoteException catch (e) {
+          if (!mounted) return;
+          _toast(e);
+        }
+      } else {
+        KLog.d('ui', '${d.name} não responde em ${d.host}:${d.port}; procurando na rede');
+      }
+      final located = await svc.relocate(d);
+      if (!mounted) return;
+      if (located != null && located.host != d.host) {
+        // update() já notificou: a próxima construção refaz a ligação no
+        // novo endereço e reconecta.
+        _toast(ConnectionException('${d.name} encontrado em ${located.host}'));
+        return;
+      }
+      if (located != null) {
+        // Vista na rede no mesmo endereço: se o serviço de controle segue
+        // mudo, a TV está em repouso — não é falha e não adianta insistir.
+        if (await svc.probePresence(d) != Presence.online) {
+          if (!mounted) return;
+          KLog.d('ui', '${d.name} anunciada em ${d.host} mas sem serviço de controle: em repouso');
+          setState(() => _state = DeviceConnectionState.standby);
+          return;
+        }
+        try {
+          await svc.connect(d);
+          return;
+        } on PairingException {
+          if (mounted && _isCurrent) unawaited(_pair(d));
+          return;
+        } on DeviceMismatchException {
+          if (mounted) {
+            _toast(ConnectionException('${d.name} não foi encontrado; outro aparelho responde em ${d.host}.'));
+          }
+          return;
+        } on RemoteException catch (e) {
+          if (mounted) _toast(e);
+        }
+      }
+      if (auto && mounted && _isCurrent && !_autoListed) {
+        _autoListed = true;
+        unawaited(_showAvailable(reason: '${d.name} não foi encontrado na rede.'));
+      }
+    } finally {
+      _recovering = false;
     }
   }
 
-  bool _pairingOpen = false;
+  Future<void> _showAvailable({String? reason}) async {
+    if (_finderOpen || _pairingOpen) return;
+    _finderOpen = true;
+    try {
+      await AvailableDevicesSheet.show(context, reason: reason);
+    } finally {
+      _finderOpen = false;
+    }
+  }
 
   /// Força novo emparelhamento (apaga credenciais e reabre o fluxo).
   Future<void> _repair(RemoteDevice d) async {
     await AppScope.of(context).devices.resetTrust(d.id);
     if (!mounted) return;
-    _boundId = null;
     await _bind();
   }
 
@@ -97,6 +241,24 @@ class _RemoteScreenState extends State<RemoteScreen> {
       await svc.sendKey(d, k, press: press);
     } on PairingException {
       if (mounted) unawaited(_pair(d));
+    } on DeviceMismatchException {
+      if (mounted && !_recovering) unawaited(_reconnect());
+    } on ConnectionException catch (e) {
+      if (!mounted) return;
+      if (_recovering) {
+        _toast(e);
+        return;
+      }
+      switch (await svc.probePresence(d)) {
+        case Presence.standby:
+          if (mounted) setState(() => _state = DeviceConnectionState.standby);
+          _toast(k == RemoteKey.power ? e : const ConnectionException('TV em repouso. Toque em Power para ligar.'));
+        case Presence.offline:
+          // Pode ser mudança de IP: tenta reencontrar o aparelho antes de avisar.
+          unawaited(_reconnect());
+        case Presence.online:
+          _toast(e);
+      }
     } catch (e) {
       _toast(e);
     }
@@ -104,28 +266,53 @@ class _RemoteScreenState extends State<RemoteScreen> {
 
   Future<void> _pair(RemoteDevice d) async {
     KLog.d('ui', 'abrir emparelhamento ${d.name} (jaAberto=$_pairingOpen)');
-    if (_pairingOpen) return;
+    if (_pairingOpen || _finderOpen) return;
     _pairingOpen = true;
     try {
       final ok = await PairingSheet.show(context, d);
       KLog.d('ui', 'emparelhamento ${d.name} encerrado: ${ok == true ? 'sucesso' : 'cancelado/falha'}');
-      if (ok == true && mounted) {
-        _boundId = null;
-        await _bind();
-      }
+      if (ok == true && mounted) await _bind();
     } finally {
       _pairingOpen = false;
     }
   }
 
   bool _supports(RemoteKey k) => _controller?.supportedKeys.contains(k) ?? false;
-  bool get _longPress => _controller?.device.protocol == RemoteProtocol.androidTv;
+  bool get _hasVoice => _controller?.capabilities.contains(RemoteCapability.voiceInput) ?? false;
+  bool get _listening => _controller?.isListening ?? false;
 
-  @override
-  void dispose() {
-    _sub?.cancel();
-    super.dispose();
+  /// Busca por voz: um toque abre a escuta na TV e transmite o microfone;
+  /// outro toque (ou a TV, ao detectar silêncio) encerra.
+  Future<void> _toggleVoice() async {
+    final svc = AppScope.of(context).devices;
+    final d = svc.active;
+    if (d == null) return;
+    if (!svc.isPaired(d)) {
+      unawaited(_pair(d));
+      return;
+    }
+    try {
+      if (_listening) {
+        await svc.stopVoice(d);
+      } else {
+        await svc.startVoice(d);
+        if (mounted) {
+          ScaffoldMessenger.of(context)
+            ..hideCurrentSnackBar()
+            ..showSnackBar(
+              const SnackBar(content: Text('Ouvindo… fale agora. Toque no microfone de novo para concluir.')),
+            );
+        }
+      }
+    } on PairingException {
+      if (mounted) unawaited(_pair(d));
+    } catch (e) {
+      _toast(e);
+    }
+    if (mounted) setState(() {});
   }
+
+  bool get _longPress => _controller?.device.protocol == RemoteProtocol.androidTv;
 
   @override
   Widget build(BuildContext context) {
@@ -135,7 +322,7 @@ class _RemoteScreenState extends State<RemoteScreen> {
       builder: (context, _) {
         final svc = scope.devices;
         final active = svc.active;
-        if (active?.id != _boundId) WidgetsBinding.instance.addPostFrameCallback((_) => _bind());
+        if (_needsBind(svc, active)) WidgetsBinding.instance.addPostFrameCallback((_) => _bind());
         return Scaffold(
           appBar: AppBar(
             title: active == null
@@ -147,7 +334,11 @@ class _RemoteScreenState extends State<RemoteScreen> {
                   padding: const EdgeInsets.only(right: 4),
                   child: Center(
                     child: GestureDetector(
-                      onTap: () => svc.isPaired(active) ? _controller?.connect().catchError(_toast) : _pair(active),
+                      onTap: () => !svc.isPaired(active)
+                          ? _pair(active)
+                          : _state == DeviceConnectionState.standby
+                          ? _key(RemoteKey.power)
+                          : _reconnect(auto: true),
                       child: StatusChip(state: _state, paired: svc.isPaired(active)),
                     ),
                   ),
@@ -165,6 +356,7 @@ class _RemoteScreenState extends State<RemoteScreen> {
                     context,
                   ).push(MaterialPageRoute<void>(builder: (_) => const DevicesScreen())),
                   'add' => _openAdd(),
+                  'available' => _showAvailable(),
                   'pair' => active == null ? null : _repair(active),
                   'settings' => Navigator.of(
                     context,
@@ -177,6 +369,10 @@ class _RemoteScreenState extends State<RemoteScreen> {
                       value: 'pair',
                       child: ListTile(leading: Icon(Icons.link), title: Text('Emparelhar novamente')),
                     ),
+                  const PopupMenuItem(
+                    value: 'available',
+                    child: ListTile(leading: Icon(Icons.wifi_find), title: Text('Aparelhos disponíveis')),
+                  ),
                   const PopupMenuItem(
                     value: 'add',
                     child: ListTile(leading: Icon(Icons.add), title: Text('Adicionar dispositivo')),
@@ -208,8 +404,6 @@ class _RemoteScreenState extends State<RemoteScreen> {
       'Controle': Icons.gamepad_outlined,
       'Mídia': Icons.play_circle_outline,
       'Números': Icons.dialpad,
-      if (!isHid) 'Apps': Icons.apps,
-      'Teclado': Icons.keyboard_alt_outlined,
     };
     final panelIndex = _panel.clamp(0, panels.length - 1);
     return SafeArea(
@@ -223,9 +417,7 @@ class _RemoteScreenState extends State<RemoteScreen> {
                 child: switch (panels.keys.elementAt(panelIndex)) {
                   'Controle' => _MainPanel(remote: this, haptics: haptics, isHid: isHid),
                   'Mídia' => _MediaPanel(remote: this, haptics: haptics),
-                  'Números' => _NumbersPanel(remote: this, haptics: haptics),
-                  'Apps' => _AppsPanel(remote: this, device: d),
-                  _ => _KeyboardPanel(remote: this, device: d),
+                  _ => _NumbersPanel(remote: this, haptics: haptics),
                 },
               ),
             ),
@@ -365,7 +557,17 @@ class _MainPanel extends StatelessWidget {
                 children: [
                   _btn(RemoteKey.power, Icons.power_settings_new, 'Ligar/desligar'),
                   _btn(RemoteKey.input, Icons.input, 'Entrada'),
-                  _btn(RemoteKey.assistant, Icons.mic, isHid ? 'Assistente' : 'Google Assistente'),
+                  if (remote._hasVoice)
+                    RemoteButton(
+                      icon: remote._listening ? Icons.graphic_eq : Icons.mic,
+                      semanticLabel: remote._listening ? 'Concluir busca por voz' : 'Busca por voz',
+                      size: 64,
+                      accent: remote._listening,
+                      haptics: haptics,
+                      onTap: remote._toggleVoice,
+                    )
+                  else
+                    _btn(RemoteKey.assistant, Icons.mic, isHid ? 'Assistente' : 'Google Assistente'),
                 ],
               ),
               const SizedBox(height: 20),
@@ -521,13 +723,15 @@ class _NumbersPanel extends StatelessWidget {
   final _RemoteScreenState remote;
   final bool haptics;
 
+  /// Teclado numérico: dígitos, traço, apagar, Enter, canal e guia — pelo
+  /// caminho de tecla (`sendKey`), que funciona em qualquer tela da TV.
   @override
   Widget build(BuildContext context) {
-    Widget n(RemoteKey k, String label, {IconData? icon}) => RemoteButton(
+    Widget n(RemoteKey k, String label, {IconData? icon, double size = 72}) => RemoteButton(
       label: icon == null ? label : null,
       icon: icon,
       semanticLabel: label,
-      size: 72,
+      size: size,
       haptics: haptics,
       enabled: remote._supports(k),
       onTap: () => remote._key(k),
@@ -577,144 +781,6 @@ class _NumbersPanel extends StatelessWidget {
             ),
           ],
         ),
-      ),
-    );
-  }
-}
-
-class _AppsPanel extends StatelessWidget {
-  const _AppsPanel({required this.remote, required this.device});
-  final _RemoteScreenState remote;
-  final RemoteDevice device;
-
-  @override
-  Widget build(BuildContext context) {
-    final c = remote._controller;
-    final apps = AppShortcut.all.where((a) => c?.supportsApp(a) ?? false).toList();
-    if (apps.isEmpty) {
-      return Center(
-        child: Text(
-          'Este dispositivo não permite abrir apps pelo controle.',
-          style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
-        ),
-      );
-    }
-    return GridView.count(
-      padding: const EdgeInsets.all(24),
-      crossAxisCount: 2,
-      mainAxisSpacing: 16,
-      crossAxisSpacing: 16,
-      childAspectRatio: 1.8,
-      children: [
-        for (final a in apps)
-          Card(
-            clipBehavior: Clip.antiAlias,
-            child: InkWell(
-              onTap: () async {
-                try {
-                  await AppScope.of(context).devices.launchApp(device, a);
-                } catch (e) {
-                  remote._toast(e);
-                }
-              },
-              child: Center(
-                child: Text(
-                  a.label,
-                  style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
-                ),
-              ),
-            ),
-          ),
-      ],
-    );
-  }
-}
-
-class _KeyboardPanel extends StatefulWidget {
-  const _KeyboardPanel({required this.remote, required this.device});
-  final _RemoteScreenState remote;
-  final RemoteDevice device;
-
-  @override
-  State<_KeyboardPanel> createState() => _KeyboardPanelState();
-}
-
-class _KeyboardPanelState extends State<_KeyboardPanel> {
-  final _ctrl = TextEditingController();
-  bool _sending = false;
-
-  @override
-  void dispose() {
-    _ctrl.dispose();
-    super.dispose();
-  }
-
-  Future<void> _send() async {
-    final text = _ctrl.text;
-    if (text.isEmpty) return;
-    setState(() => _sending = true);
-    try {
-      await AppScope.of(context).devices.sendText(widget.device, text);
-      _ctrl.clear();
-    } catch (e) {
-      widget.remote._toast(e);
-    } finally {
-      if (mounted) setState(() => _sending = false);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final supported = widget.remote._controller?.capabilities.contains(RemoteCapability.textInput) ?? false;
-    final cs = Theme.of(context).colorScheme;
-    return Padding(
-      padding: const EdgeInsets.all(24),
-      child: Column(
-        children: [
-          Text(
-            supported
-                ? 'Digite e envie para o campo em foco na tela (busca, login…).'
-                : 'Este dispositivo não aceita digitação remota.',
-            style: TextStyle(color: cs.onSurfaceVariant),
-          ),
-          const SizedBox(height: 16),
-          TextField(
-            controller: _ctrl,
-            enabled: supported && !_sending,
-            maxLength: 200,
-            textInputAction: TextInputAction.send,
-            onSubmitted: (_) => _send(),
-            decoration: const InputDecoration(hintText: 'Texto para a TV', counterText: ''),
-          ),
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              Expanded(
-                child: FilledButton.icon(
-                  onPressed: supported && !_sending ? _send : null,
-                  icon: const Icon(Icons.send),
-                  label: const Text('Enviar'),
-                ),
-              ),
-              const SizedBox(width: 12),
-              RemoteButton(
-                icon: Icons.backspace_outlined,
-                semanticLabel: 'Apagar',
-                size: 52,
-                enabled: widget.remote._supports(RemoteKey.backspace),
-                onTap: () => widget.remote._key(RemoteKey.backspace),
-              ),
-              const SizedBox(width: 8),
-              RemoteButton(
-                icon: Icons.keyboard_return,
-                semanticLabel: 'Enter',
-                size: 52,
-                enabled: widget.remote._supports(RemoteKey.enter),
-                onTap: () => widget.remote._key(RemoteKey.enter),
-              ),
-            ],
-          ),
-        ],
       ),
     );
   }

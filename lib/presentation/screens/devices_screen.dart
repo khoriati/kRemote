@@ -2,17 +2,41 @@ import 'package:flutter/material.dart';
 
 import '../../app/app_scope.dart';
 import '../../application/device_service.dart';
+import '../../domain/entities/connection_state.dart';
 import '../../domain/entities/remote_device.dart';
 import 'add_device_screen.dart';
+import 'available_devices_sheet.dart';
+import 'bluetooth_link_sheet.dart';
 import 'pairing_sheet.dart';
 
-/// Gestão dos dispositivos cadastrados.
-class DevicesScreen extends StatelessWidget {
+/// Gestão dos dispositivos cadastrados, com presença na rede verificada
+/// periodicamente enquanto a tela está aberta.
+class DevicesScreen extends StatefulWidget {
   const DevicesScreen({super.key});
 
   @override
+  State<DevicesScreen> createState() => _DevicesScreenState();
+}
+
+class _DevicesScreenState extends State<DevicesScreen> {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) AppScope.of(context).devices.watchPresence();
+    });
+  }
+
+  @override
+  void dispose() {
+    AppScope.of(context).devices.unwatchPresence();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final svc = AppScope.of(context).devices;
+    final scope = AppScope.of(context);
+    final svc = scope.devices;
     return Scaffold(
       appBar: AppBar(title: const Text('Meus dispositivos')),
       floatingActionButton: FloatingActionButton.extended(
@@ -39,12 +63,25 @@ class DevicesScreen extends StatelessWidget {
             itemBuilder: (context, i) {
               final d = list[i];
               final isActive = svc.active?.id == d.id;
+              final p = d.protocol.isNetwork ? svc.presence(d) : null;
+              final presence = switch (p) {
+                Presence.online => ' · na rede',
+                Presence.standby => ' · em repouso',
+                Presence.offline => ' · fora da rede',
+                null => '',
+              };
               return Card(
                 child: ListTile(
-                  leading: Icon(Icons.tv, color: isActive ? Theme.of(context).colorScheme.primary : null),
+                  leading: Stack(
+                    clipBehavior: Clip.none,
+                    children: [
+                      Icon(Icons.tv, color: isActive ? Theme.of(context).colorScheme.primary : null),
+                      if (d.protocol.isNetwork) Positioned(right: -8, bottom: -6, child: PresenceDot(presence: p)),
+                    ],
+                  ),
                   title: Text(d.name),
                   subtitle: Text(
-                    '${d.protocol.label}\n${d.protocol.isNetwork ? '${d.host}:${d.port}' : d.host}${svc.isPaired(d) ? '' : ' · não emparelhado'}',
+                    '${d.protocol.label}\n${d.protocol.isNetwork ? '${d.host}:${d.port}' : d.host}${svc.isPaired(d) ? '' : ' · não emparelhado'}$presence',
                   ),
                   isThreeLine: true,
                   onTap: () {
@@ -62,6 +99,15 @@ class DevicesScreen extends StatelessWidget {
                           value: 'castvol',
                           child: Text(
                             d.volumeViaCast ? 'Volume por tecla (desligar Cast)' : 'Volume via Cast (recomendado)',
+                          ),
+                        ),
+                      if (d.protocol == RemoteProtocol.androidTv && scope.bluetooth.isPlatformSupported)
+                        PopupMenuItem(
+                          value: 'bt',
+                          child: Text(
+                            d.bluetoothAddress == null
+                                ? 'Ligar pela Bluetooth (Wi-Fi desligado em repouso)'
+                                : 'Bluetooth vinculado (${d.bluetoothAddress})',
                           ),
                         ),
                       if (d.protocol.isNetwork)
@@ -136,6 +182,8 @@ class DevicesScreen extends StatelessWidget {
           return;
         }
         await svc.update(mac.isEmpty ? d.copyWith(clearMac: true) : d.copyWith(macAddress: mac));
+      case 'bt':
+        await BluetoothLinkSheet.show(context, d);
       case 'castvol':
         await svc.update(d.copyWith(volumeViaCast: !d.volumeViaCast));
       case 'trust':

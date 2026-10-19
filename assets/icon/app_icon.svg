@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1B2A5B"/>
+      <stop offset="1" stop-color="#0E6E8A"/>
+    </linearGradient>
+    <linearGradient id="body" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#F7F9FC"/>
+      <stop offset="1" stop-color="#D9E1EC"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#5EE0C6" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#5EE0C6" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="1024" height="1024" fill="url(#bg)"/>
+  <circle cx="512" cy="430" r="380" fill="url(#glow)"/>
+  <!-- ondas de sinal -->
+  <g fill="none" stroke="#FFFFFF" stroke-width="34" stroke-linecap="round" opacity="0.9">
+    <path d="M 640 236 a 150 150 0 0 1 0 212"/>
+    <path d="M 704 172 a 240 240 0 0 1 0 340" opacity="0.55"/>
+  </g>
+  <!-- corpo do controle -->
+  <rect x="318" y="150" width="270" height="724" rx="112" fill="url(#body)"/>
+  <!-- d-pad -->
+  <circle cx="453" cy="418" r="118" fill="#1B2A5B"/>
+  <circle cx="453" cy="418" r="48" fill="#5EE0C6"/>
+  <g fill="#FFFFFF" opacity="0.85">
+    <path d="M 453 328 l 20 24 h -40 z"/>
+    <path d="M 453 508 l 20 -24 h -40 z"/>
+    <path d="M 363 418 l 24 -20 v 40 z"/>
+    <path d="M 543 418 l -24 -20 v 40 z"/>
+  </g>
+  <!-- botões -->
+  <circle cx="405" cy="600" r="30" fill="#E5484D"/>
+  <circle cx="500" cy="600" r="30" fill="#1B2A5B" opacity="0.85"/>
+  <rect x="375" y="672" width="60" height="150" rx="30" fill="#1B2A5B" opacity="0.85"/>
+  <rect x="470" y="672" width="60" height="150" rx="30" fill="#1B2A5B" opacity="0.85"/>
+  <circle cx="453" cy="236" r="26" fill="#1B2A5B" opacity="0.85"/>
+</svg>

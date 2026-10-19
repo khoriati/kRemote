@@ -11,7 +11,9 @@ class SecureCredentialStore implements CredentialStore {
     : _storage =
           storage ??
           const FlutterSecureStorage(
-            aOptions: AndroidOptions(resetOnError: true, storageNamespace: 'kremote'),
+            // Nunca apagar tudo num erro do Keystore: um erro transitório
+            // (ex.: logo após reinício) destruiria todos os emparelhamentos.
+            aOptions: AndroidOptions(resetOnError: false, storageNamespace: 'kremote'),
             iOptions: IOSOptions(accessibility: KeychainAccessibility.first_unlock_this_device),
           );
 

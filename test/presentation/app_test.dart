@@ -4,12 +4,14 @@ import 'package:kremote/app/app.dart';
 import 'package:kremote/app/app_scope.dart';
 import 'package:kremote/app/theme.dart';
 import 'package:kremote/application/device_service.dart';
+import 'package:kremote/application/network_scanner.dart';
 import 'package:kremote/application/settings_service.dart';
 import 'package:kremote/domain/entities/remote_device.dart';
 import 'package:kremote/domain/entities/remote_key.dart';
 import 'package:kremote/infrastructure/controller_factory.dart';
 import 'package:kremote/infrastructure/protocols/android_tv/android_tv_certificate.dart';
 import 'package:kremote/infrastructure/protocols/bluetooth_hid/bluetooth_hid_channel.dart';
+import 'package:kremote/presentation/screens/home_screen.dart';
 import 'package:kremote/presentation/widgets/dpad.dart';
 import 'package:kremote/presentation/widgets/remote_button.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -35,7 +37,7 @@ Future<Widget> buildApp({List<RemoteDevice> devices = const []}) async {
   return AppScope(
     devices: svc,
     settings: settings,
-    discovery: FakeDiscovery(const []),
+    scanner: NetworkScanner(FakeDiscovery(const [])),
     bluetooth: const BluetoothHidChannel(),
     child: const KRemoteApp(),
   );
@@ -49,7 +51,7 @@ void main() {
     expect(find.text('Adicionar dispositivo'), findsOneWidget);
   });
 
-  testWidgets('com dispositivo cadastrado mostra o controle e o seletor', (tester) async {
+  testWidgets('tela inicial lista os aparelhos como botões e abre o controle ao tocar', (tester) async {
     await tester.pumpWidget(
       await buildApp(
         devices: [
@@ -58,6 +60,12 @@ void main() {
         ],
       ),
     );
+    await tester.pumpAndSettle();
+    expect(find.text('Qual aparelho você quer controlar?'), findsOneWidget);
+    expect(find.text('Sala'), findsOneWidget);
+    expect(find.text('Quarto'), findsOneWidget);
+    expect(find.byType(DPad), findsNothing, reason: 'o controle só abre depois da escolha');
+    await tester.tap(find.text('Sala'));
     await tester.pumpAndSettle();
     expect(find.text('Sala'), findsOneWidget);
     expect(find.byType(DPad), findsOneWidget);
@@ -83,6 +91,29 @@ void main() {
     await tester.tap(find.text('Números'));
     await tester.pumpAndSettle();
     expect(find.text('5'), findsOneWidget);
+  });
+
+  test('tela inicial ordena por disponibilidade: ligado, repouso, verificando, fora da rede', () async {
+    SharedPreferences.setMockInitialValues({});
+    final creds = MemoryCredentialStore();
+    final pins = MemoryPinStore();
+    final presence = <String, bool>{'on': true, 'off': false};
+    final svc = DeviceService(
+      repository: MemoryDeviceRepository()
+        ..saved = [
+          device(id: 'off', name: 'Alfa', host: '10.0.0.1'),
+          device(id: 'on', name: 'Zeta', host: '10.0.0.2'),
+          device(id: 'unk', name: 'Beta', host: '10.0.0.3'),
+        ],
+      credentials: creds,
+      pins: pins,
+      factory: ControllerFactory(credentials: creds, pins: pins),
+      probe: (host, port) async => presence[host == '10.0.0.1' ? 'off' : 'on'] ?? false,
+    );
+    await svc.load();
+    await svc.probePresence(svc.devices.firstWhere((d) => d.id == 'off'));
+    await svc.probePresence(svc.devices.firstWhere((d) => d.id == 'on'));
+    expect(HomeScreenState.ordered(svc).map((d) => d.id), ['on', 'unk', 'off']);
   });
 
   testWidgets('temas constroem sem erro e o alto contraste tem borda', (tester) async {

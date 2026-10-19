@@ -2,7 +2,7 @@ import 'package:flutter/widgets.dart';
 
 import '../application/device_service.dart';
 import '../application/settings_service.dart';
-import '../domain/ports/device_discovery.dart';
+import '../application/network_scanner.dart';
 import '../infrastructure/protocols/bluetooth_hid/bluetooth_hid_channel.dart';
 
 /// Injeção de dependências simples: expõe os serviços da aplicação à árvore
@@ -12,14 +12,14 @@ class AppScope extends InheritedWidget {
     super.key,
     required this.devices,
     required this.settings,
-    required this.discovery,
+    required this.scanner,
     required this.bluetooth,
     required super.child,
   });
 
   final DeviceService devices;
   final SettingsService settings;
-  final DeviceDiscovery discovery;
+  final NetworkScanner scanner;
   final BluetoothHidChannel bluetooth;
 
   static AppScope of(BuildContext context) {
@@ -29,6 +29,5 @@ class AppScope extends InheritedWidget {
   }
 
   @override
-  bool updateShouldNotify(AppScope old) =>
-      devices != old.devices || settings != old.settings || discovery != old.discovery;
+  bool updateShouldNotify(AppScope old) => devices != old.devices || settings != old.settings || scanner != old.scanner;
 }

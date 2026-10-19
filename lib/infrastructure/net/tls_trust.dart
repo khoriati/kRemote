@@ -21,11 +21,13 @@ class TlsTrust {
   String? _pinned;
   String? _seen;
   bool _loaded = false;
+  bool _mismatch = false;
 
   /// Deve ser chamado antes de abrir a conexão (callbacks TLS são síncronos).
   Future<void> load() async {
     _pinned = await store.read(deviceId);
     _loaded = true;
+    _mismatch = false;
   }
 
   static String fingerprint(X509Certificate cert) => crypto.sha256.convert(cert.der).toString();
@@ -35,11 +37,20 @@ class TlsTrust {
   bool accept(X509Certificate cert) {
     assert(_loaded, 'TlsTrust.load() deve ser chamado antes da conexão');
     final fp = fingerprint(cert);
-    if (_pinned != null) return _pinned == fp;
-    if (!trustOnFirstUse) return false;
     _seen = fp;
-    return true;
+    if (_pinned != null) {
+      _mismatch = _pinned != fp;
+      return !_mismatch;
+    }
+    return trustOnFirstUse;
   }
+
+  /// A última conexão foi recusada porque o certificado apresentado difere do
+  /// fixado — isto é, quem responde no endereço não é o aparelho cadastrado.
+  bool get pinMismatch => _mismatch;
+
+  /// Impressão digital vista na última conexão (fixada ou não).
+  String? get seenFingerprint => _seen;
 
   bool accept3(X509Certificate cert, String host, int port) => accept(cert);
 
@@ -52,10 +63,10 @@ class TlsTrust {
   }
 
   /// Mensagem de erro amigável para falhas de handshake.
-  static RemoteException describeHandshakeFailure({required bool hadPin}) => hadPin
-      ? const ConnectionException(
-          'O certificado do dispositivo mudou. Por segurança a conexão foi recusada; '
-          'redefina a confiança do dispositivo se a troca for legítima.',
+  static RemoteException describeHandshakeFailure({required bool pinMismatch}) => pinMismatch
+      ? const DeviceMismatchException(
+          'O aparelho que responde neste endereço não é o cadastrado (certificado diferente). '
+          'Procurando a TV na rede…',
         )
       : const PairingException('Dispositivo precisa ser emparelhado');
 

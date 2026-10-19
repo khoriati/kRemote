@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -7,12 +8,16 @@ import 'package:flutter/services.dart';
 import 'app/app.dart';
 import 'app/app_scope.dart';
 import 'application/device_service.dart';
+import 'application/network_scanner.dart';
 import 'application/settings_service.dart';
 import 'infrastructure/controller_factory.dart';
 import 'infrastructure/discovery/composite_discovery.dart';
+import 'infrastructure/discovery/host_probe.dart';
 import 'infrastructure/discovery/mdns_discovery.dart';
 import 'infrastructure/discovery/ssdp_discovery.dart';
+import 'infrastructure/discovery/subnet_sweep_discovery.dart';
 import 'infrastructure/net/log.dart';
+import 'infrastructure/net/tls_fingerprint.dart';
 import 'infrastructure/protocols/bluetooth_hid/bluetooth_hid_channel.dart';
 import 'infrastructure/storage/prefs_device_repository.dart';
 import 'infrastructure/storage/secure_credential_store.dart';
@@ -23,18 +28,29 @@ Future<void> main() async {
   await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp, DeviceOrientation.portraitDown]);
 
   final secure = SecureCredentialStore();
-  final factory = ControllerFactory(credentials: secure, pins: secure.pins);
+  const bluetooth = BluetoothHidChannel();
+  final factory = ControllerFactory(credentials: secure, pins: secure.pins, bluetooth: bluetooth);
+  final probe = HostProbe();
+  final scanner = NetworkScanner(
+    CompositeDiscovery([MdnsDiscovery(probe: probe), SsdpDiscovery(probe: probe)]),
+    deep: SubnetSweepDiscovery(probe: probe),
+    identifier: probe,
+  );
   final devices = DeviceService(
     repository: PrefsDeviceRepository(),
     credentials: secure,
     pins: secure.pins,
     factory: factory,
+    scanner: scanner,
+    fingerprintProbe: (host, port) async => tlsFingerprint(host, port, identity: await factory.appIdentity()),
     probe: (host, port) async {
       try {
         final s = await Socket.connect(host, port, timeout: const Duration(seconds: 2));
         s.destroy();
         return true;
       } on SocketException {
+        return false;
+      } on TimeoutException {
         return false;
       }
     },
@@ -43,12 +59,6 @@ Future<void> main() async {
   await Future.wait([devices.load(), settings.load()]);
 
   runApp(
-    AppScope(
-      devices: devices,
-      settings: settings,
-      discovery: CompositeDiscovery([MdnsDiscovery(), SsdpDiscovery()]),
-      bluetooth: const BluetoothHidChannel(),
-      child: const KRemoteApp(),
-    ),
+    AppScope(devices: devices, settings: settings, scanner: scanner, bluetooth: bluetooth, child: const KRemoteApp()),
   );
 }
